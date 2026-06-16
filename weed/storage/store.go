@@ -185,6 +185,9 @@ func (s *Store) addVolume(vid needle.VolumeId, collection string, needleMapKind 
 			}
 			return nil
 		} else {
+			if IsDiskError(err) {
+				location.ReportDiskError(err)
+			}
 			return err
 		}
 	}

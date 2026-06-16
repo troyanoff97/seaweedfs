@@ -20,6 +20,7 @@ func IsDiskError(err error) bool {
 		errors.Is(err, syscall.ENOSPC) ||
 		errors.Is(err, syscall.EROFS) ||
 		errors.Is(err, syscall.EPERM) ||
+		errors.Is(err, syscall.EACCES) ||
 		errors.Is(err, fs.ErrPermission) {
 		return true
 	}
@@ -28,7 +29,7 @@ func IsDiskError(err error) bool {
 	if errors.As(err, &pathErr) {
 		if errno, ok := pathErr.Err.(syscall.Errno); ok {
 			switch errno {
-			case syscall.EIO, syscall.ENOSPC, syscall.EROFS, syscall.EPERM:
+			case syscall.EIO, syscall.ENOSPC, syscall.EROFS, syscall.EPERM, syscall.EACCES:
 				return true
 			}
 		}
@@ -38,5 +39,6 @@ func IsDiskError(err error) bool {
 	return strings.Contains(msg, "input/output error") ||
 		strings.Contains(msg, "read-only file system") ||
 		strings.Contains(msg, "no space left on device") ||
+		strings.Contains(msg, "permission denied") ||
 		strings.Contains(msg, "not writable")
 }

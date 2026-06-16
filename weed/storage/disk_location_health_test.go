@@ -88,3 +88,34 @@ func TestStartupUnhealthyMountPoint(t *testing.T) {
 		t.Fatal("expected unhealthy when mount point is unavailable at startup")
 	}
 }
+
+func TestAddVolumeReportsDiskError(t *testing.T) {
+	dir := t.TempDir()
+	idx := filepath.Join(dir, "idx")
+	if err := os.MkdirAll(idx, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	loc := NewDiskLocation(dir, 4, util.MinFreeSpace{Type: util.AsPercent, Percent: 1, Raw: "1"}, idx, types.HardDriveType)
+	defer loc.Close()
+
+	if err := os.Chmod(dir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(idx, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = os.Chmod(idx, 0o755)
+		_ = os.Chmod(dir, 0o755)
+	}()
+
+	s := &Store{Locations: []*DiskLocation{loc}}
+	err := s.addVolume(1, "", NeedleMapInMemory, nil, nil, 0, 0, types.HardDriveType, 0)
+	if err == nil {
+		t.Fatal("expected addVolume to fail on readonly directory")
+	}
+	if loc.IsHealthyForWrites() {
+		t.Fatal("expected location marked unhealthy after failed volume growth")
+	}
+}

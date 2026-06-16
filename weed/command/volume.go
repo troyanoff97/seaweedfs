@@ -152,27 +152,18 @@ func runVolume(cmd *Command, args []string) bool {
 
 func (v VolumeServerOptions) startVolumeServer(volumeFolders, maxVolumeCounts, volumeWhiteListOption string, minFreeSpaces []util.MinFreeSpace) {
 
-	// Set multiple folders and each folder's max volume count limit'
+	// Set multiple folders and each folder's max volume count limit
 	v.folders = strings.Split(volumeFolders, ",")
+	healthyDirs := 0
 	for _, folder := range v.folders {
 		if err := util.TestFolderWritable(util.ResolvePath(folder)); err != nil {
 			glog.Errorf("Check Data Folder(-dir) Writable %s : %s (directory will start unhealthy)", folder, err)
+		} else {
+			healthyDirs++
 		}
 	}
-	if len(v.folders) == 1 {
-		if err := util.TestFolderWritable(util.ResolvePath(v.folders[0])); err != nil {
-			glog.Fatalf("Check Data Folder(-dir) Writable %s : %s", v.folders[0], err)
-		}
-	} else {
-		healthyDirs := 0
-		for _, folder := range v.folders {
-			if err := util.TestFolderWritable(util.ResolvePath(folder)); err == nil {
-				healthyDirs++
-			}
-		}
-		if healthyDirs == 0 {
-			glog.Fatalf("no writable data folders in -dir")
-		}
+	if healthyDirs == 0 {
+		glog.Fatalf("no writable data folders in -dir")
 	}
 
 	// set max
