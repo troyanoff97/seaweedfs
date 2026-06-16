@@ -23,8 +23,11 @@ func (v *Volume) checkReadWriteError(err error) {
 		}
 		return
 	}
-	if err.Error() == "input/output error" {
+	if IsDiskError(err) {
 		v.lastIoError = err
+		if v.location != nil {
+			v.location.ReportDiskError(err)
+		}
 	}
 }
 
@@ -276,6 +279,7 @@ func (v *Volume) startWorker() {
 			v.dataFileAccessLock.Lock()
 			end, _, e := v.DataBackend.GetStat()
 			if e != nil {
+				v.checkReadWriteError(e)
 				for i := 0; i < len(currentRequests); i++ {
 					currentRequests[i].Complete(0, 0, false,
 						fmt.Errorf("cannot read current volume position: %v", e))
@@ -296,6 +300,7 @@ func (v *Volume) startWorker() {
 
 			// if sync error, data is not reliable, we should mark the completed request as fail and rollback
 			if err := v.DataBackend.Sync(); err != nil {
+				v.checkReadWriteError(err)
 				// todo: this may generate dirty data or cause data inconsistent, may be weed need to panic?
 				if te := v.DataBackend.Truncate(end); te != nil {
 					glog.V(0).Infof("Failed to truncate %s back to %d with error: %v", v.DataBackend.Name(), end, te)

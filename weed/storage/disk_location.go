@@ -35,7 +35,11 @@ type DiskLocation struct {
 	ecVolumesLock sync.RWMutex
 
 	isDiskSpaceLow bool
-	closeCh        chan struct{}
+	healthLock     sync.RWMutex
+	health         diskHealthState
+	lastHealthError error
+	unhealthySince  time.Time
+	closeCh         chan struct{}
 }
 
 func GenerateDirUuid(dir string) (dirUuidString string, err error) {
@@ -79,18 +83,19 @@ func NewDiskLocation(dir string, maxVolumeCount int32, minFreeSpace util.MinFree
 		MaxVolumeCount:         maxVolumeCount,
 		OriginalMaxVolumeCount: maxVolumeCount,
 		MinFreeSpace:           minFreeSpace,
+		health:                 diskHealthHealthy,
 	}
 	location.volumes = make(map[needle.VolumeId]*Volume)
 	location.ecVolumes = make(map[needle.VolumeId]*erasure_coding.EcVolume)
 	location.closeCh = make(chan struct{})
 	go func() {
-		location.CheckDiskSpace()
+		location.checkHealthAndDiskSpace()
 		for {
 			select {
 			case <-location.closeCh:
 				return
 			case <-time.After(time.Minute):
-				location.CheckDiskSpace()
+				location.checkHealthAndDiskSpace()
 			}
 		}
 	}()
@@ -174,6 +179,9 @@ func (l *DiskLocation) loadExistingVolume(dirEntry os.DirEntry, needleMapKind Ne
 	v, e := NewVolume(l.Directory, l.IdxDirectory, collection, vid, needleMapKind, nil, nil, 0, 0, ldbTimeout)
 	if e != nil {
 		glog.V(0).Infof("new volume %s error %s", volumeName, e)
+		if IsDiskError(e) {
+			l.ReportDiskError(e)
+		}
 		return false
 	}
 

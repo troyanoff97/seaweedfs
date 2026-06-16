@@ -88,6 +88,10 @@ func NewStore(grpcDialOption grpc.DialOption, ip string, port int, grpcPort int,
 	var wg sync.WaitGroup
 	for i := 0; i < len(dirnames); i++ {
 		location := NewDiskLocation(dirnames[i], int32(maxVolumeCounts[i]), minFreeSpaces[i], idxFolder, diskTypes[i])
+		if err := util.TestFolderWritable(util.ResolvePath(dirnames[i])); err != nil {
+			glog.Errorf("disk location %s not writable at startup: %v", dirnames[i], err)
+			location.SetInitialHealthFromStartup(err)
+		}
 		s.Locations = append(s.Locations, location)
 		stats.VolumeServerMaxVolumeCounter.Add(float64(maxVolumeCounts[i]))
 
@@ -145,7 +149,7 @@ func (s *Store) FindFreeLocation(filterFn func(location *DiskLocation) bool) (re
 		if filterFn != nil && !filterFn(location) {
 			continue
 		}
-		if location.isDiskSpaceLow {
+		if !location.IsHealthyForWrites() {
 			continue
 		}
 		currentFreeCount := location.MaxVolumeCount - int32(location.VolumesLen())
