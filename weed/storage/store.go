@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/seaweedfs/seaweedfs/weed/pb"
 	"github.com/seaweedfs/seaweedfs/weed/storage/volume_info"
@@ -657,4 +658,35 @@ func (s *Store) MaybeAdjustVolumeMax() (hasChanges bool) {
 	}
 	stats.VolumeServerMaxVolumeCounter.Set(float64(newMaxVolumeCount))
 	return
+}
+
+// DiskHealthStatus is JSON-friendly disk health for /status and monitoring.
+type DiskHealthStatus struct {
+	Directory        string `json:"Directory"`
+	Healthy          bool   `json:"Healthy"`
+	HealthyForWrites bool   `json:"HealthyForWrites"`
+	DiskSpaceLow     bool   `json:"DiskSpaceLow"`
+	LastError        string `json:"LastError,omitempty"`
+	UnhealthySince   string `json:"UnhealthySince,omitempty"`
+}
+
+func (s *Store) DiskHealthStatuses() []DiskHealthStatus {
+	result := make([]DiskHealthStatus, 0, len(s.Locations))
+	for _, loc := range s.Locations {
+		snap := loc.HealthSnapshot()
+		status := DiskHealthStatus{
+			Directory:        snap.Directory,
+			Healthy:          snap.Healthy,
+			HealthyForWrites: loc.IsHealthyForWrites(),
+			DiskSpaceLow:     snap.DiskSpaceLow,
+		}
+		if snap.LastError != nil {
+			status.LastError = snap.LastError.Error()
+		}
+		if !snap.UnhealthySince.IsZero() {
+			status.UnhealthySince = snap.UnhealthySince.UTC().Format(time.RFC3339)
+		}
+		result = append(result, status)
+	}
+	return result
 }

@@ -41,6 +41,7 @@ func (vs *VolumeServer) statusHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	m["DiskStatuses"] = ds
+	m["DiskHealth"] = vs.store.DiskHealthStatuses()
 	m["Volumes"] = vs.store.VolumeInfos()
 	writeJsonQuiet(w, r, http.StatusOK, m)
 }

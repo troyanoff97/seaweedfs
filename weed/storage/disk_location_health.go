@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/seaweedfs/seaweedfs/weed/glog"
+	"github.com/seaweedfs/seaweedfs/weed/stats"
 	"github.com/seaweedfs/seaweedfs/weed/util"
 )
 
@@ -52,6 +53,7 @@ func (l *DiskLocation) markUnhealthy(err error, source string) {
 		glog.Errorf("disk location %s marked unhealthy (%s): %v; new writes disabled on this directory",
 			l.Directory, source, err)
 	}
+	l.publishDiskHealthMetrics()
 }
 
 func (l *DiskLocation) tryRecoverHealth() {
@@ -77,11 +79,21 @@ func (l *DiskLocation) tryRecoverHealth() {
 	if wasUnhealthy {
 		glog.Infof("disk location %s recovered and is healthy again; writes re-enabled", l.Directory)
 	}
+	l.publishDiskHealthMetrics()
 }
 
 func (l *DiskLocation) checkHealthAndDiskSpace() {
 	l.CheckDiskSpace()
 	l.tryRecoverHealth()
+	l.publishDiskHealthMetrics()
+}
+
+func (l *DiskLocation) publishDiskHealthMetrics() {
+	val := 0.0
+	if l.IsHealthyForWrites() {
+		val = 1.0
+	}
+	stats.VolumeServerDiskHealthyGauge.WithLabelValues(l.Directory).Set(val)
 }
 
 // DiskHealthSnapshot is used by tests and admin visibility.

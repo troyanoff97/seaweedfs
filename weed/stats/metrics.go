@@ -274,6 +274,14 @@ var (
 			Help:      "Resource usage",
 		}, []string{"name", "type"})
 
+	VolumeServerDiskHealthyGauge = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Namespace: Namespace,
+			Subsystem: "volumeServer",
+			Name:      "disk_healthy",
+			Help:      "1 if the disk location is healthy for writes, 0 otherwise.",
+		}, []string{"dir"})
+
 	S3RequestCounter = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Namespace: Namespace,
@@ -347,6 +355,7 @@ func init() {
 	Gather.MustRegister(VolumeServerReadOnlyVolumeGauge)
 	Gather.MustRegister(VolumeServerDiskSizeGauge)
 	Gather.MustRegister(VolumeServerResourceGauge)
+	Gather.MustRegister(VolumeServerDiskHealthyGauge)
 
 	Gather.MustRegister(S3RequestCounter)
 	Gather.MustRegister(S3HandlerCounter)
