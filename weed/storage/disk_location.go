@@ -39,6 +39,7 @@ type DiskLocation struct {
 	health         diskHealthState
 	lastHealthError error
 	unhealthySince  time.Time
+	onDiskHealthChange func()
 	closeCh         chan struct{}
 }
 

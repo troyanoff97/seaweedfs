@@ -1,10 +1,14 @@
 package storage
 
 import (
+	"fmt"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/seaweedfs/seaweedfs/weed/glog"
 	"github.com/seaweedfs/seaweedfs/weed/stats"
+	"github.com/seaweedfs/seaweedfs/weed/storage/needle"
 	"github.com/seaweedfs/seaweedfs/weed/util"
 )
 
@@ -50,10 +54,12 @@ func (l *DiskLocation) markUnhealthy(err error, source string) {
 	l.healthLock.Unlock()
 
 	if wasHealthy {
-		glog.Errorf("disk location %s marked unhealthy (%s): %v; new writes disabled on this directory",
-			l.Directory, source, err)
+		volumeIds := l.volumeIds()
+		glog.Errorf("disk location %s marked unhealthy (%s): %v; new writes disabled on this directory; existing volumes marked readonly: %s",
+			l.Directory, source, err, formatVolumeIds(volumeIds))
 	}
 	l.publishDiskHealthMetrics()
+	l.notifyDiskHealthChange()
 }
 
 func (l *DiskLocation) tryRecoverHealth() {
@@ -77,9 +83,12 @@ func (l *DiskLocation) tryRecoverHealth() {
 	l.healthLock.Unlock()
 
 	if wasUnhealthy {
-		glog.Infof("disk location %s recovered and is healthy again; writes re-enabled", l.Directory)
+		volumeIds := l.volumeIds()
+		glog.Infof("disk location %s recovered and is healthy again; volumes restored to writable: %s",
+			l.Directory, formatVolumeIds(volumeIds))
 	}
 	l.publishDiskHealthMetrics()
+	l.notifyDiskHealthChange()
 }
 
 func (l *DiskLocation) checkHealthAndDiskSpace() {
@@ -98,21 +107,57 @@ func (l *DiskLocation) publishDiskHealthMetrics() {
 
 // DiskHealthSnapshot is used by tests and admin visibility.
 type DiskHealthSnapshot struct {
-	Directory      string
-	Healthy        bool
-	DiskSpaceLow   bool
-	LastError      error
-	UnhealthySince time.Time
+	Directory         string
+	Healthy           bool
+	DiskSpaceLow      bool
+	LastError         error
+	UnhealthySince    time.Time
+	ReadOnlyVolumeIds []uint32
+}
+
+func (l *DiskLocation) volumeIds() []needle.VolumeId {
+	l.volumesLock.RLock()
+	defer l.volumesLock.RUnlock()
+	ids := make([]needle.VolumeId, 0, len(l.volumes))
+	for id := range l.volumes {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	return ids
+}
+
+func formatVolumeIds(ids []needle.VolumeId) string {
+	if len(ids) == 0 {
+		return "none"
+	}
+	parts := make([]string, len(ids))
+	for i, id := range ids {
+		parts[i] = fmt.Sprintf("%d", id)
+	}
+	return strings.Join(parts, ", ")
+}
+
+func (l *DiskLocation) notifyDiskHealthChange() {
+	if l.onDiskHealthChange != nil {
+		l.onDiskHealthChange()
+	}
 }
 
 func (l *DiskLocation) HealthSnapshot() DiskHealthSnapshot {
 	l.healthLock.RLock()
-	defer l.healthLock.RUnlock()
-	return DiskHealthSnapshot{
+	snap := DiskHealthSnapshot{
 		Directory:      l.Directory,
 		Healthy:        l.health == diskHealthHealthy,
 		DiskSpaceLow:   l.isDiskSpaceLow,
 		LastError:      l.lastHealthError,
 		UnhealthySince: l.unhealthySince,
 	}
+	l.healthLock.RUnlock()
+
+	if !l.IsHealthyForWrites() {
+		for _, id := range l.volumeIds() {
+			snap.ReadOnlyVolumeIds = append(snap.ReadOnlyVolumeIds, uint32(id))
+		}
+	}
+	return snap
 }

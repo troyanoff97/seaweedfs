@@ -73,6 +73,7 @@ type Store struct {
 	DeletedVolumesChan  chan master_pb.VolumeShortInformationMessage
 	NewEcShardsChan     chan master_pb.VolumeEcShardInformationMessage
 	DeletedEcShardsChan chan master_pb.VolumeEcShardInformationMessage
+	DiskHealthChangeChan chan struct{}
 	isStopping          bool
 }
 
@@ -109,6 +110,16 @@ func NewStore(grpcDialOption grpc.DialOption, ip string, port int, grpcPort int,
 
 	s.NewEcShardsChan = make(chan master_pb.VolumeEcShardInformationMessage, 3)
 	s.DeletedEcShardsChan = make(chan master_pb.VolumeEcShardInformationMessage, 3)
+	s.DiskHealthChangeChan = make(chan struct{}, 1)
+	for _, location := range s.Locations {
+		loc := location
+		loc.onDiskHealthChange = func() {
+			select {
+			case s.DiskHealthChangeChan <- struct{}{}:
+			default:
+			}
+		}
+	}
 
 	return
 }
@@ -662,12 +673,13 @@ func (s *Store) MaybeAdjustVolumeMax() (hasChanges bool) {
 
 // DiskHealthStatus is JSON-friendly disk health for /status and monitoring.
 type DiskHealthStatus struct {
-	Directory        string `json:"Directory"`
-	Healthy          bool   `json:"Healthy"`
-	HealthyForWrites bool   `json:"HealthyForWrites"`
-	DiskSpaceLow     bool   `json:"DiskSpaceLow"`
-	LastError        string `json:"LastError,omitempty"`
-	UnhealthySince   string `json:"UnhealthySince,omitempty"`
+	Directory         string   `json:"Directory"`
+	Healthy           bool     `json:"Healthy"`
+	HealthyForWrites  bool     `json:"HealthyForWrites"`
+	DiskSpaceLow      bool     `json:"DiskSpaceLow"`
+	LastError         string   `json:"LastError,omitempty"`
+	UnhealthySince    string   `json:"UnhealthySince,omitempty"`
+	ReadOnlyVolumeIds []uint32 `json:"ReadOnlyVolumeIds,omitempty"`
 }
 
 func (s *Store) DiskHealthStatuses() []DiskHealthStatus {
@@ -675,10 +687,11 @@ func (s *Store) DiskHealthStatuses() []DiskHealthStatus {
 	for _, loc := range s.Locations {
 		snap := loc.HealthSnapshot()
 		status := DiskHealthStatus{
-			Directory:        snap.Directory,
-			Healthy:          snap.Healthy,
-			HealthyForWrites: loc.IsHealthyForWrites(),
-			DiskSpaceLow:     snap.DiskSpaceLow,
+			Directory:         snap.Directory,
+			Healthy:           snap.Healthy,
+			HealthyForWrites:  loc.IsHealthyForWrites(),
+			DiskSpaceLow:      snap.DiskSpaceLow,
+			ReadOnlyVolumeIds: snap.ReadOnlyVolumeIds,
 		}
 		if snap.LastError != nil {
 			status.LastError = snap.LastError.Error()
