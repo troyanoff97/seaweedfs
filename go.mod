@@ -1,6 +1,6 @@
 module github.com/seaweedfs/seaweedfs
 
-go 1.22.0
+go 1.25.0
 
 require (
 	cloud.google.com/go v0.116.0 // indirect
@@ -102,14 +102,14 @@ require (
 	gocloud.dev v0.40.0
 	gocloud.dev/pubsub/natspubsub v0.40.0
 	gocloud.dev/pubsub/rabbitpubsub v0.40.0
-	golang.org/x/crypto v0.29.0 // indirect
+	golang.org/x/crypto v0.51.0 // indirect
 	golang.org/x/exp v0.0.0-20240719175910-8a7402abbf56
-	golang.org/x/image v0.21.0
-	golang.org/x/net v0.31.0
+	golang.org/x/image v0.42.0
+	golang.org/x/net v0.54.0
 	golang.org/x/oauth2 v0.23.0 // indirect
-	golang.org/x/sys v0.27.0
-	golang.org/x/text v0.20.0 // indirect
-	golang.org/x/tools v0.27.0
+	golang.org/x/sys v0.44.0
+	golang.org/x/text v0.38.0 // indirect
+	golang.org/x/tools v0.45.0 // indirect
 	golang.org/x/xerrors v0.0.0-20240716161551-93cc26a95ae9 // indirect
 	google.golang.org/api v0.203.0
 	google.golang.org/genproto v0.0.0-20241015192408-796eee8c2d53 // indirect
@@ -153,7 +153,8 @@ require (
 	github.com/ydb-platform/ydb-go-sdk/v3 v3.91.0
 	go.etcd.io/etcd/client/pkg/v3 v3.5.17
 	go.uber.org/atomic v1.11.0
-	golang.org/x/sync v0.9.0
+	golang.org/x/sync v0.21.0
+	golang.org/x/tools/godoc v0.1.0-deprecated
 	google.golang.org/grpc/security/advancedtls v1.0.0
 )
 
@@ -346,8 +347,8 @@ require (
 	go.opentelemetry.io/otel/trace v1.29.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	go.uber.org/zap v1.27.0 // indirect
-	golang.org/x/mod v0.22.0 // indirect
-	golang.org/x/term v0.26.0 // indirect
+	golang.org/x/mod v0.36.0 // indirect
+	golang.org/x/term v0.43.0 // indirect
 	golang.org/x/time v0.7.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20241007155032-5fefd90f89a9 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20241015192408-796eee8c2d53 // indirect
