@@ -1,6 +1,6 @@
 module github.com/seaweedfs/seaweedfs
 
-go 1.22.0
+go 1.23.0
 
 require (
 	cloud.google.com/go v0.116.0 // indirect
@@ -52,7 +52,7 @@ require (
 	github.com/jmespath/go-jmespath v0.4.0 // indirect
 	github.com/json-iterator/go v1.1.12
 	github.com/karlseguin/ccache/v2 v2.0.8
-	github.com/klauspost/compress v1.17.9 // indirect
+	github.com/klauspost/compress v1.18.0 // indirect
 	github.com/klauspost/reedsolomon v1.12.4
 	github.com/kurin/blazer v0.5.3
 	github.com/lib/pq v1.10.9
@@ -70,10 +70,10 @@ require (
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
 	github.com/posener/complete v1.2.3
 	github.com/pquerna/cachecontrol v0.2.0
-	github.com/prometheus/client_golang v1.20.5
-	github.com/prometheus/client_model v0.6.1 // indirect
-	github.com/prometheus/common v0.55.0 // indirect
-	github.com/prometheus/procfs v0.15.1
+	github.com/prometheus/client_golang v1.23.2
+	github.com/prometheus/client_model v0.6.2 // indirect
+	github.com/prometheus/common v0.66.1 // indirect
+	github.com/prometheus/procfs v0.16.1
 	github.com/rcrowley/go-metrics v0.0.0-20201227073835-cf1acfcdf475 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/seaweedfs/goexif v1.0.3
@@ -82,7 +82,7 @@ require (
 	github.com/spf13/afero v1.11.0 // indirect
 	github.com/spf13/cast v1.6.0 // indirect
 	github.com/spf13/viper v1.19.0
-	github.com/stretchr/testify v1.9.0
+	github.com/stretchr/testify v1.11.1
 	github.com/stvp/tempredis v0.0.0-20181119212430-b82af8480203
 	github.com/syndtr/goleveldb v1.0.1-0.20190318030020-c3a204f8e965
 	github.com/tidwall/gjson v1.18.0
@@ -102,19 +102,19 @@ require (
 	gocloud.dev v0.40.0
 	gocloud.dev/pubsub/natspubsub v0.40.0
 	gocloud.dev/pubsub/rabbitpubsub v0.40.0
-	golang.org/x/crypto v0.29.0 // indirect
+	golang.org/x/crypto v0.41.0 // indirect
 	golang.org/x/exp v0.0.0-20240719175910-8a7402abbf56
 	golang.org/x/image v0.21.0
-	golang.org/x/net v0.31.0
-	golang.org/x/oauth2 v0.23.0 // indirect
-	golang.org/x/sys v0.27.0
-	golang.org/x/text v0.20.0 // indirect
-	golang.org/x/tools v0.27.0
+	golang.org/x/net v0.43.0
+	golang.org/x/oauth2 v0.30.0 // indirect
+	golang.org/x/sys v0.35.0
+	golang.org/x/text v0.28.0 // indirect
+	golang.org/x/tools v0.35.0
 	golang.org/x/xerrors v0.0.0-20240716161551-93cc26a95ae9 // indirect
 	google.golang.org/api v0.203.0
 	google.golang.org/genproto v0.0.0-20241015192408-796eee8c2d53 // indirect
 	google.golang.org/grpc v1.67.1
-	google.golang.org/protobuf v1.35.1
+	google.golang.org/protobuf v1.36.8
 	gopkg.in/inf.v0 v0.9.1 // indirect
 	modernc.org/b v1.0.0 // indirect
 	modernc.org/mathutil v1.6.0
@@ -153,7 +153,7 @@ require (
 	github.com/ydb-platform/ydb-go-sdk/v3 v3.91.0
 	go.etcd.io/etcd/client/pkg/v3 v3.5.17
 	go.uber.org/atomic v1.11.0
-	golang.org/x/sync v0.9.0
+	golang.org/x/sync v0.16.0
 	google.golang.org/grpc/security/advancedtls v1.0.0
 )
 
@@ -346,8 +346,9 @@ require (
 	go.opentelemetry.io/otel/trace v1.29.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	go.uber.org/zap v1.27.0 // indirect
-	golang.org/x/mod v0.22.0 // indirect
-	golang.org/x/term v0.26.0 // indirect
+	go.yaml.in/yaml/v2 v2.4.2 // indirect
+	golang.org/x/mod v0.26.0 // indirect
+	golang.org/x/term v0.34.0 // indirect
 	golang.org/x/time v0.7.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20241007155032-5fefd90f89a9 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20241015192408-796eee8c2d53 // indirect
