@@ -117,10 +117,10 @@ require (
 	google.golang.org/protobuf v1.35.1
 	gopkg.in/inf.v0 v0.9.1 // indirect
 	modernc.org/b v1.0.0 // indirect
-	modernc.org/mathutil v1.6.0
+	modernc.org/mathutil v1.7.1
 	modernc.org/memory v1.8.0 // indirect
 	modernc.org/sqlite v1.34.1
-	modernc.org/strutil v1.2.0
+	modernc.org/strutil v1.2.1
 	modernc.org/token v1.1.0 // indirect
 )
 
