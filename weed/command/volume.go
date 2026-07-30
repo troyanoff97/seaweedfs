@@ -121,6 +121,7 @@ var (
 	volumeWhiteListOption = cmdVolume.Flag.String("whiteList", "", "comma separated Ip addresses having write permission. No limit if empty.")
 	minFreeSpacePercent   = cmdVolume.Flag.String("minFreeSpacePercent", "1", "minimum free disk space (default to 1%). Low disk space will mark all volumes as ReadOnly (deprecated, use minFreeSpace instead).")
 	minFreeSpace          = cmdVolume.Flag.String("minFreeSpace", "", "min free disk space (value<=100 as percentage like 1, other as human readable bytes, like 10GiB). Low disk space will mark all volumes as ReadOnly.")
+	diskLocationsConfig   = cmdVolume.Flag.String("dir.config", "", "persist runtime disk list from /admin/disk/add|remove (survives restart). Empty = /var/lib/seaweedfs/volume.<ip>.<port>.disks.json")
 )
 
 func runVolume(cmd *Command, args []string) bool {
@@ -154,18 +155,6 @@ func (v VolumeServerOptions) startVolumeServer(volumeFolders, maxVolumeCounts, v
 
 	// Set multiple folders and each folder's max volume count limit
 	v.folders = strings.Split(volumeFolders, ",")
-	healthyDirs := 0
-	for _, folder := range v.folders {
-		if err := util.TestFolderWritable(util.ResolvePath(folder)); err != nil {
-			glog.Errorf("Check Data Folder(-dir) Writable %s : %s (directory will start unhealthy)", folder, err)
-		} else {
-			healthyDirs++
-		}
-	}
-	if healthyDirs == 0 {
-		glog.Fatalf("no writable data folders in -dir")
-	}
-
 	// set max
 	maxCountStrings := strings.Split(maxVolumeCounts, ",")
 	for _, maxString := range maxCountStrings {
@@ -208,9 +197,6 @@ func (v VolumeServerOptions) startVolumeServer(volumeFolders, maxVolumeCounts, v
 		glog.Fatalf("%d directories by -dir, but only %d disk types is set by -disk", len(v.folders), len(diskTypes))
 	}
 
-	// security related white list configuration
-	v.whiteList = util.StringSplit(volumeWhiteListOption, ",")
-
 	if *v.ip == "" {
 		*v.ip = util.DetectedHostAddress()
 		glog.V(0).Infof("detected volume server ip address: %v", *v.ip)
@@ -218,7 +204,6 @@ func (v VolumeServerOptions) startVolumeServer(volumeFolders, maxVolumeCounts, v
 	if *v.bindIp == "" {
 		*v.bindIp = *v.ip
 	}
-
 	if *v.publicPort == 0 {
 		*v.publicPort = *v.port
 	}
@@ -228,6 +213,45 @@ func (v VolumeServerOptions) startVolumeServer(volumeFolders, maxVolumeCounts, v
 	if *v.publicUrl == "" {
 		*v.publicUrl = util.JoinHostPort(*v.ip, *v.publicPort)
 	}
+
+	diskConfigPath := *diskLocationsConfig
+	if diskConfigPath == "" {
+		diskConfigPath = storage.DefaultDiskLocationsConfigPath(*v.ip, *v.port)
+	}
+	if cfg, err := storage.LoadDiskLocationsConfig(diskConfigPath); err == nil && cfg != nil {
+		// File exists: always authoritative over systemd/CLI -dir (even if empty → fail closed).
+		if len(cfg.Disks) == 0 {
+			glog.Fatalf("persisted disk config %s has no disks; delete the file to fall back to -dir, or restore disks via /admin/disk/add", diskConfigPath)
+		}
+		dirs, maxCounts, loadedMinFree, loadedDiskTypes, loadErr := cfg.ToStartupArgs()
+		if loadErr != nil {
+			glog.Fatalf("invalid persisted disk config %s: %v", diskConfigPath, loadErr)
+		}
+		glog.V(0).Infof("loading persisted disk locations from %s (%d dirs; overrides -dir)", diskConfigPath, len(dirs))
+		v.folders = dirs
+		v.folderMaxLimits = maxCounts
+		minFreeSpaces = loadedMinFree
+		diskTypes = loadedDiskTypes
+	} else if err != nil && !os.IsNotExist(err) {
+		glog.Fatalf("failed to load disk config %s: %v", diskConfigPath, err)
+	} else {
+		glog.V(0).Infof("no persisted disk config at %s; using -dir from command line", diskConfigPath)
+	}
+
+	healthyDirs := 0
+	for _, folder := range v.folders {
+		if err := util.TestFolderWritable(util.ResolvePath(folder)); err != nil {
+			glog.Errorf("Check Data Folder(-dir) Writable %s : %s (directory will start unhealthy)", folder, err)
+		} else {
+			healthyDirs++
+		}
+	}
+	if healthyDirs == 0 {
+		glog.Fatalf("no writable data folders in -dir")
+	}
+
+	// security related white list configuration
+	v.whiteList = util.StringSplit(volumeWhiteListOption, ",")
 
 	volumeMux := http.NewServeMux()
 	publicVolumeMux := volumeMux
@@ -269,6 +293,7 @@ func (v VolumeServerOptions) startVolumeServer(volumeFolders, maxVolumeCounts, v
 		*v.hasSlowRead,
 		*v.readBufferSizeMB,
 		*v.ldbTimeout,
+		diskConfigPath,
 	)
 	// starting grpc server
 	grpcS := v.startGrpcService(volumeServer)

@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -19,6 +20,7 @@ func TestAdminDiskAddListRemove(t *testing.T) {
 	store := storage.NewStore(nil, "127.0.0.1", 8088, 0, "", []string{dir1},
 		[]int32{8}, []util.MinFreeSpace{minFree}, "", storage.NeedleMapInMemory,
 		[]types.DiskType{types.HardDriveType}, 0)
+	store.SetDiskConfigPath(filepath.Join(t.TempDir(), "disks.json"))
 	defer store.Close()
 	vs := &VolumeServer{store: store}
 

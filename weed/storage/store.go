@@ -76,6 +76,7 @@ type Store struct {
 	DeletedEcShardsChan  chan master_pb.VolumeEcShardInformationMessage
 	DiskHealthChangeChan chan struct{}
 	isStopping           bool
+	diskConfigPath       string
 }
 
 // LocationsSnapshot returns a stable copy of the currently active disk locations.

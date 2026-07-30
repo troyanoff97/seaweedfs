@@ -49,11 +49,12 @@ func (vs *VolumeServer) adminDiskAddHandler(w http.ResponseWriter, r *http.Reque
 	}
 	glog.V(0).Infof("admin disk add ok dir=%s max=%d", dir, maxCount)
 	writeJsonQuiet(w, r, http.StatusOK, map[string]interface{}{
-		"status":  "ok",
-		"dir":     dir,
-		"max":     maxCount,
-		"dirs":    vs.store.ListDiskLocations(),
-		"message": "disk added; heartbeat will update master",
+		"status":    "ok",
+		"dir":       dir,
+		"max":       maxCount,
+		"dirs":      vs.store.ListDiskLocations(),
+		"dirConfig": vs.store.DiskConfigPath(),
+		"message":   "disk added and persisted; survives restart; heartbeat will update master",
 	})
 }
 
@@ -84,11 +85,12 @@ func (vs *VolumeServer) adminDiskRemoveHandler(w http.ResponseWriter, r *http.Re
 	}
 	glog.V(0).Infof("admin disk remove ok dir=%s force=%v", dir, force)
 	writeJsonQuiet(w, r, http.StatusOK, map[string]interface{}{
-		"status":  "ok",
-		"dir":     dir,
-		"force":   force,
-		"dirs":    vs.store.ListDiskLocations(),
-		"message": "disk removed; heartbeat will update master",
+		"status":    "ok",
+		"dir":       dir,
+		"force":     force,
+		"dirs":      vs.store.ListDiskLocations(),
+		"dirConfig": vs.store.DiskConfigPath(),
+		"message":   "disk removed and persisted; survives restart; heartbeat will update master",
 	})
 }
 
@@ -102,6 +104,7 @@ func (vs *VolumeServer) adminDiskListHandler(w http.ResponseWriter, r *http.Requ
 	writeJsonQuiet(w, r, http.StatusOK, map[string]interface{}{
 		"dirs":       vs.store.ListDiskLocations(),
 		"diskHealth": vs.store.DiskHealthStatuses(),
+		"dirConfig":  vs.store.DiskConfigPath(),
 	})
 }
 
