@@ -23,12 +23,37 @@ func TestFolderWritable(folder string) (err error) {
 	if !fileInfo.IsDir() {
 		return errors.New("Not a valid folder!")
 	}
-	perm := fileInfo.Mode().Perm()
-	glog.V(0).Infoln("Folder", folder, "Permission:", perm)
-	if 0200&perm != 0 {
-		return nil
+
+	// Checking mode bits is not sufficient: the process may not own the
+	// directory, ACLs can deny access, or the filesystem may be read-only.
+	// Exercise the actual write path as the current process user instead.
+	probe, err := os.CreateTemp(folder, ".weed-write-test-*")
+	if err != nil {
+		return fmt.Errorf("create write probe in %s: %w", folder, err)
 	}
-	return errors.New("Not writable!")
+	probeName := probe.Name()
+	cleanup := func() {
+		_ = probe.Close()
+		_ = os.Remove(probeName)
+	}
+
+	if _, err = probe.Write([]byte{0}); err != nil {
+		cleanup()
+		return fmt.Errorf("write probe in %s: %w", folder, err)
+	}
+	if err = probe.Sync(); err != nil {
+		cleanup()
+		return fmt.Errorf("sync write probe in %s: %w", folder, err)
+	}
+	if err = probe.Close(); err != nil {
+		_ = os.Remove(probeName)
+		return fmt.Errorf("close write probe in %s: %w", folder, err)
+	}
+	if err = os.Remove(probeName); err != nil {
+		return fmt.Errorf("remove write probe in %s: %w", folder, err)
+	}
+	glog.V(4).Infof("folder %s passed real write probe", folder)
+	return nil
 }
 
 func GetFileSize(file *os.File) (size int64, err error) {

@@ -67,12 +67,9 @@ func (l *DiskLocation) markUnhealthy(err error, source string) {
 
 func (l *DiskLocation) tryRecoverHealth() {
 	if err := util.TestFolderWritable(l.Directory); err != nil {
-		l.healthLock.RLock()
-		wasUnhealthy := l.health == diskHealthUnhealthy
-		l.healthLock.RUnlock()
-		if wasUnhealthy {
-			glog.V(4).Infof("disk location %s still unhealthy: %v", l.Directory, err)
-		}
+		// Proactively detect permission, read-only filesystem, full disk, and
+		// synchronous I/O failures without waiting for an application write.
+		l.markUnhealthy(err, "probe")
 		return
 	}
 

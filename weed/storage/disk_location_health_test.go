@@ -12,14 +12,21 @@ import (
 	"github.com/seaweedfs/seaweedfs/weed/util"
 )
 
+func newHealthTestLocation(dir string) *DiskLocation {
+	loc := &DiskLocation{
+		Directory:    dir,
+		MinFreeSpace: util.MinFreeSpace{Type: util.AsPercent, Percent: 1, Raw: "1"},
+		volumes:      make(map[needle.VolumeId]*Volume),
+		health:       diskHealthHealthy,
+		closeCh:      make(chan struct{}),
+	}
+	loc.active.Store(true)
+	return loc
+}
+
 func TestDiskLocationHealthLifecycle(t *testing.T) {
 	dir := t.TempDir()
-	idx := filepath.Join(dir, "idx")
-	if err := os.MkdirAll(idx, 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	loc := NewDiskLocation(dir, 8, util.MinFreeSpace{Type: util.AsPercent, Percent: 1, Raw: "1"}, idx, types.HardDriveType)
+	loc := newHealthTestLocation(dir)
 	defer loc.Close()
 
 	if !loc.IsHealthyForWrites() {
@@ -42,6 +49,28 @@ func TestDiskLocationHealthLifecycle(t *testing.T) {
 	snap = loc.HealthSnapshot()
 	if !snap.Healthy || snap.LastError != nil {
 		t.Fatalf("unexpected snapshot after recovery: %+v", snap)
+	}
+}
+
+func TestWritableProbeMarksLocationUnhealthyAndRecovers(t *testing.T) {
+	dir := t.TempDir()
+	loc := newHealthTestLocation(dir)
+	defer loc.Close()
+
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatal(err)
+	}
+	loc.tryRecoverHealth()
+	if loc.IsHealthyForWrites() {
+		t.Fatal("expected missing disk location to fail the real write probe")
+	}
+
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	loc.tryRecoverHealth()
+	if !loc.IsHealthyForWrites() {
+		t.Fatal("expected disk location to recover after write probe succeeds")
 	}
 }
 
