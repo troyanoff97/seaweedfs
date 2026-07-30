@@ -114,3 +114,16 @@ func TestAddDiskLocationRequiresWritable(t *testing.T) {
 		t.Fatal("expected error for missing dir")
 	}
 }
+
+func TestRemoveLastDiskLocationRefused(t *testing.T) {
+	dir := t.TempDir()
+	s := newTestStoreWithDirs(t, dir)
+	defer s.Close()
+
+	if err := s.RemoveDiskLocation(dir, true); err == nil {
+		t.Fatal("expected error when removing the last disk location")
+	}
+	if got := s.ListDiskLocations(); len(got) != 1 || got[0] != dir {
+		t.Fatalf("last disk changed after rejected remove: %v", got)
+	}
+}

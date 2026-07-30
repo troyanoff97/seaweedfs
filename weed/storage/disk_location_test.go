@@ -45,6 +45,7 @@ func TestUnUsedSpace(t *testing.T) {
 		OriginalMaxVolumeCount: 0,
 		MinFreeSpace:           minFreeSpace,
 	}
+	diskLocation.active.Store(true)
 	diskLocation.volumes = make(map[needle.VolumeId]*Volume)
 
 	volumes := [3]*Volume{
@@ -60,7 +61,7 @@ func TestUnUsedSpace(t *testing.T) {
 	// Testing when there's still space
 	unUsedSpace := diskLocation.UnUsedSpace(1200)
 	if unUsedSpace != 600 {
-		t.Errorf("unUsedSpace incorrect: %d != %d", unUsedSpace, 1500)
+		t.Errorf("unUsedSpace incorrect: %d != %d", unUsedSpace, 600)
 	}
 
 	// Testing when there's exactly 0 space
