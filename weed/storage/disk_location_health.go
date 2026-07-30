@@ -21,6 +21,9 @@ const (
 
 // IsHealthyForWrites returns whether this directory accepts new volume growth and writes.
 func (l *DiskLocation) IsHealthyForWrites() bool {
+	if !l.IsActive() {
+		return false
+	}
 	l.healthLock.RLock()
 	defer l.healthLock.RUnlock()
 	return l.health == diskHealthHealthy && !l.isDiskSpaceLow
@@ -138,8 +141,11 @@ func formatVolumeIds(ids []needle.VolumeId) string {
 }
 
 func (l *DiskLocation) notifyDiskHealthChange() {
-	if l.onDiskHealthChange != nil {
-		l.onDiskHealthChange()
+	l.onDiskHealthMu.RLock()
+	fn := l.onDiskHealthChange
+	l.onDiskHealthMu.RUnlock()
+	if fn != nil {
+		fn()
 	}
 }
 

@@ -56,25 +56,35 @@ type ReadOption struct {
  * A VolumeServer contains one Store
  */
 type Store struct {
-	MasterAddress       pb.ServerAddress
-	grpcDialOption      grpc.DialOption
-	volumeSizeLimit     uint64      // read from the master
-	preallocate         atomic.Bool // read from the master
-	Ip                  string
-	Port                int
-	GrpcPort            int
-	PublicUrl           string
-	Locations           []*DiskLocation
-	dataCenter          string // optional information, overwriting master setting if exists
-	rack                string // optional information, overwriting master setting if exists
-	connected           bool
-	NeedleMapKind       NeedleMapKind
-	NewVolumesChan      chan master_pb.VolumeShortInformationMessage
-	DeletedVolumesChan  chan master_pb.VolumeShortInformationMessage
-	NewEcShardsChan     chan master_pb.VolumeEcShardInformationMessage
-	DeletedEcShardsChan chan master_pb.VolumeEcShardInformationMessage
+	MasterAddress        pb.ServerAddress
+	grpcDialOption       grpc.DialOption
+	volumeSizeLimit      uint64      // read from the master
+	preallocate          atomic.Bool // read from the master
+	Ip                   string
+	Port                 int
+	GrpcPort             int
+	PublicUrl            string
+	Locations            []*DiskLocation
+	locationsMu          sync.RWMutex
+	dataCenter           string // optional information, overwriting master setting if exists
+	rack                 string // optional information, overwriting master setting if exists
+	connected            bool
+	NeedleMapKind        NeedleMapKind
+	NewVolumesChan       chan master_pb.VolumeShortInformationMessage
+	DeletedVolumesChan   chan master_pb.VolumeShortInformationMessage
+	NewEcShardsChan      chan master_pb.VolumeEcShardInformationMessage
+	DeletedEcShardsChan  chan master_pb.VolumeEcShardInformationMessage
 	DiskHealthChangeChan chan struct{}
-	isStopping          bool
+	isStopping           bool
+}
+
+// LocationsSnapshot returns a stable copy of the currently active disk locations.
+func (s *Store) LocationsSnapshot() []*DiskLocation {
+	s.locationsMu.RLock()
+	defer s.locationsMu.RUnlock()
+	locations := make([]*DiskLocation, len(s.Locations))
+	copy(locations, s.Locations)
+	return locations
 }
 
 func (s *Store) String() (str string) {
@@ -111,14 +121,14 @@ func NewStore(grpcDialOption grpc.DialOption, ip string, port int, grpcPort int,
 	s.NewEcShardsChan = make(chan master_pb.VolumeEcShardInformationMessage, 3)
 	s.DeletedEcShardsChan = make(chan master_pb.VolumeEcShardInformationMessage, 3)
 	s.DiskHealthChangeChan = make(chan struct{}, 1)
-	for _, location := range s.Locations {
+	for _, location := range s.LocationsSnapshot() {
 		loc := location
-		loc.onDiskHealthChange = func() {
+		loc.SetOnDiskHealthChange(func() {
 			select {
 			case s.DiskHealthChangeChan <- struct{}{}:
 			default:
 			}
-		}
+		})
 	}
 
 	return
@@ -136,7 +146,7 @@ func (s *Store) AddVolume(volumeId needle.VolumeId, collection string, needleMap
 	return e
 }
 func (s *Store) DeleteCollection(collection string) (e error) {
-	for _, location := range s.Locations {
+	for _, location := range s.LocationsSnapshot() {
 		e = location.DeleteCollectionFromDiskLocation(collection)
 		if e != nil {
 			return
@@ -148,7 +158,7 @@ func (s *Store) DeleteCollection(collection string) (e error) {
 }
 
 func (s *Store) findVolume(vid needle.VolumeId) *Volume {
-	for _, location := range s.Locations {
+	for _, location := range s.LocationsSnapshot() {
 		if v, found := location.FindVolume(vid); found {
 			return v
 		}
@@ -157,7 +167,7 @@ func (s *Store) findVolume(vid needle.VolumeId) *Volume {
 }
 func (s *Store) FindFreeLocation(filterFn func(location *DiskLocation) bool) (ret *DiskLocation) {
 	max := int32(0)
-	for _, location := range s.Locations {
+	for _, location := range s.LocationsSnapshot() {
 		if filterFn != nil && !filterFn(location) {
 			continue
 		}
@@ -207,7 +217,7 @@ func (s *Store) addVolume(vid needle.VolumeId, collection string, needleMapKind 
 }
 
 func (s *Store) VolumeInfos() (allStats []*VolumeInfo) {
-	for _, location := range s.Locations {
+	for _, location := range s.LocationsSnapshot() {
 		stats := collectStatsForOneLocation(location)
 		allStats = append(allStats, stats...)
 	}
@@ -275,7 +285,7 @@ func (s *Store) CollectHeartbeat() *master_pb.Heartbeat {
 	collectionVolumeSize := make(map[string]int64)
 	collectionVolumeDeletedBytes := make(map[string]int64)
 	collectionVolumeReadOnlyCount := make(map[string]map[string]uint8)
-	for _, location := range s.Locations {
+	for _, location := range s.LocationsSnapshot() {
 		var deleteVids []needle.VolumeId
 		maxVolumeCounts[string(location.DiskType)] += uint32(location.MaxVolumeCount)
 		location.volumesLock.RLock()
@@ -362,7 +372,7 @@ func (s *Store) CollectHeartbeat() *master_pb.Heartbeat {
 	ecVolumeMessages, deletedEcVolumes := s.deleteExpiredEcVolumes()
 
 	var uuidList []string
-	for _, loc := range s.Locations {
+	for _, loc := range s.LocationsSnapshot() {
 		uuidList = append(uuidList, loc.DirectoryUuid)
 	}
 
@@ -399,7 +409,7 @@ func (s *Store) CollectHeartbeat() *master_pb.Heartbeat {
 }
 
 func (s *Store) deleteExpiredEcVolumes() (ecShards, deleted []*master_pb.VolumeEcShardInformationMessage) {
-	for _, location := range s.Locations {
+	for _, location := range s.LocationsSnapshot() {
 		for _, ev := range location.ecVolumes {
 			messages := ev.ToVolumeEcShardInformationMessage()
 			if ev.IsTimeToDestroy() {
@@ -420,19 +430,19 @@ func (s *Store) deleteExpiredEcVolumes() (ecShards, deleted []*master_pb.VolumeE
 
 func (s *Store) SetStopping() {
 	s.isStopping = true
-	for _, location := range s.Locations {
+	for _, location := range s.LocationsSnapshot() {
 		location.SetStopping()
 	}
 }
 
 func (s *Store) LoadNewVolumes() {
-	for _, location := range s.Locations {
+	for _, location := range s.LocationsSnapshot() {
 		location.loadExistingVolumes(s.NeedleMapKind, 0)
 	}
 }
 
 func (s *Store) Close() {
-	for _, location := range s.Locations {
+	for _, location := range s.LocationsSnapshot() {
 		location.Close()
 	}
 }
@@ -517,7 +527,7 @@ func (s *Store) MarkVolumeWritable(i needle.VolumeId) error {
 }
 
 func (s *Store) MountVolume(i needle.VolumeId) error {
-	for _, location := range s.Locations {
+	for _, location := range s.LocationsSnapshot() {
 		if found := location.LoadVolume(i, s.NeedleMapKind); found == true {
 			glog.V(0).Infof("mount volume %d", i)
 			v := s.findVolume(i)
@@ -550,7 +560,7 @@ func (s *Store) UnmountVolume(i needle.VolumeId) error {
 		DiskType:         string(v.location.DiskType),
 	}
 
-	for _, location := range s.Locations {
+	for _, location := range s.LocationsSnapshot() {
 		err := location.UnloadVolume(i)
 		if err == nil {
 			glog.V(0).Infof("UnmountVolume %d", i)
@@ -577,7 +587,7 @@ func (s *Store) DeleteVolume(i needle.VolumeId, onlyEmpty bool) error {
 		Ttl:              v.Ttl.ToUint32(),
 		DiskType:         string(v.location.DiskType),
 	}
-	for _, location := range s.Locations {
+	for _, location := range s.LocationsSnapshot() {
 		err := location.DeleteVolume(i, onlyEmpty)
 		if err == nil {
 			glog.V(0).Infof("DeleteVolume %d", i)
@@ -597,7 +607,7 @@ func (s *Store) DeleteVolume(i needle.VolumeId, onlyEmpty bool) error {
 
 func (s *Store) ConfigureVolume(i needle.VolumeId, replication string) error {
 
-	for _, location := range s.Locations {
+	for _, location := range s.LocationsSnapshot() {
 		fileInfo, found := location.LocateVolume(i)
 		if !found {
 			continue
@@ -642,7 +652,7 @@ func (s *Store) MaybeAdjustVolumeMax() (hasChanges bool) {
 		return
 	}
 	var newMaxVolumeCount int32
-	for _, diskLocation := range s.Locations {
+	for _, diskLocation := range s.LocationsSnapshot() {
 		if diskLocation.OriginalMaxVolumeCount == 0 {
 			currentMaxVolumeCount := atomic.LoadInt32(&diskLocation.MaxVolumeCount)
 			diskStatus := stats.NewDiskStatus(diskLocation.Directory)
@@ -683,8 +693,9 @@ type DiskHealthStatus struct {
 }
 
 func (s *Store) DiskHealthStatuses() []DiskHealthStatus {
-	result := make([]DiskHealthStatus, 0, len(s.Locations))
-	for _, loc := range s.Locations {
+	locations := s.LocationsSnapshot()
+	result := make([]DiskHealthStatus, 0, len(locations))
+	for _, loc := range locations {
 		snap := loc.HealthSnapshot()
 		status := DiskHealthStatus{
 			Directory:         snap.Directory,

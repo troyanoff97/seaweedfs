@@ -332,7 +332,7 @@ func (vs *VolumeServer) CopyFile(req *volume_server_pb.CopyFileRequest, stream v
 		fileName = v.FileName(req.Ext)
 	} else {
 		baseFileName := erasure_coding.EcShardBaseFileName(req.Collection, int(req.VolumeId)) + req.Ext
-		for _, location := range vs.store.Locations {
+		for _, location := range vs.store.LocationsSnapshot() {
 			tName := util.Join(location.Directory, baseFileName)
 			if util.FileExists(tName) {
 				fileName = tName

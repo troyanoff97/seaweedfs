@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -34,13 +35,15 @@ type DiskLocation struct {
 	ecVolumes     map[needle.VolumeId]*erasure_coding.EcVolume
 	ecVolumesLock sync.RWMutex
 
-	isDiskSpaceLow bool
-	healthLock     sync.RWMutex
-	health         diskHealthState
-	lastHealthError error
-	unhealthySince  time.Time
+	isDiskSpaceLow     bool
+	healthLock         sync.RWMutex
+	health             diskHealthState
+	lastHealthError    error
+	unhealthySince     time.Time
+	onDiskHealthMu     sync.RWMutex
 	onDiskHealthChange func()
-	closeCh         chan struct{}
+	closeCh            chan struct{}
+	active             atomic.Bool
 }
 
 func GenerateDirUuid(dir string) (dirUuidString string, err error) {
@@ -65,6 +68,16 @@ func GenerateDirUuid(dir string) (dirUuidString string, err error) {
 }
 
 func NewDiskLocation(dir string, maxVolumeCount int32, minFreeSpace util.MinFreeSpace, idxDir string, diskType types.DiskType) *DiskLocation {
+	location, err := NewDiskLocationOrError(dir, maxVolumeCount, minFreeSpace, idxDir, diskType)
+	if err != nil {
+		glog.Fatalf("%v", err)
+	}
+	return location
+}
+
+// NewDiskLocationOrError creates a disk location without process exit on failure
+// (used for hot-add of directories at runtime).
+func NewDiskLocationOrError(dir string, maxVolumeCount int32, minFreeSpace util.MinFreeSpace, idxDir string, diskType types.DiskType) (*DiskLocation, error) {
 	glog.V(4).Infof("Added new Disk %s: maxVolumes=%d", dir, maxVolumeCount)
 	dir = util.ResolvePath(dir)
 	if idxDir == "" {
@@ -74,7 +87,7 @@ func NewDiskLocation(dir string, maxVolumeCount int32, minFreeSpace util.MinFree
 	}
 	dirUuid, err := GenerateDirUuid(dir)
 	if err != nil {
-		glog.Fatalf("cannot generate uuid of dir %s: %v", dir, err)
+		return nil, fmt.Errorf("cannot generate uuid of dir %s: %v", dir, err)
 	}
 	location := &DiskLocation{
 		Directory:              dir,
@@ -89,6 +102,7 @@ func NewDiskLocation(dir string, maxVolumeCount int32, minFreeSpace util.MinFree
 	location.volumes = make(map[needle.VolumeId]*Volume)
 	location.ecVolumes = make(map[needle.VolumeId]*erasure_coding.EcVolume)
 	location.closeCh = make(chan struct{})
+	location.active.Store(true)
 	go func() {
 		location.checkHealthAndDiskSpace()
 		for {
@@ -100,7 +114,21 @@ func NewDiskLocation(dir string, maxVolumeCount int32, minFreeSpace util.MinFree
 			}
 		}
 	}()
-	return location
+	return location, nil
+}
+
+func (l *DiskLocation) IsActive() bool {
+	return l.active.Load()
+}
+
+func (l *DiskLocation) SetOnDiskHealthChange(fn func()) {
+	l.onDiskHealthMu.Lock()
+	l.onDiskHealthChange = fn
+	l.onDiskHealthMu.Unlock()
+}
+
+func (l *DiskLocation) deactivate() {
+	l.active.Store(false)
 }
 
 func volumeIdFromFileName(filename string) (needle.VolumeId, string, error) {
@@ -369,6 +397,9 @@ func (l *DiskLocation) SetVolume(vid needle.VolumeId, volume *Volume) {
 }
 
 func (l *DiskLocation) FindVolume(vid needle.VolumeId) (*Volume, bool) {
+	if !l.IsActive() {
+		return nil, false
+	}
 	l.volumesLock.RLock()
 	defer l.volumesLock.RUnlock()
 

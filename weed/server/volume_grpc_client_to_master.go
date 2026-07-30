@@ -120,7 +120,7 @@ func (vs *VolumeServer) doHeartbeat(masterAddress pb.ServerAddress, grpcDialOpti
 			}
 			if len(in.DuplicatedUuids) > 0 {
 				var duplicateDir []string
-				for _, loc := range vs.store.Locations {
+				for _, loc := range vs.store.LocationsSnapshot() {
 					for _, uuid := range in.DuplicatedUuids {
 						if uuid == loc.DirectoryUuid {
 							duplicateDir = append(duplicateDir, loc.Directory)
@@ -246,9 +246,13 @@ func (vs *VolumeServer) doHeartbeat(masterAddress pb.ServerAddress, grpcDialOpti
 				return "", err
 			}
 		case <-vs.store.DiskHealthChangeChan:
-			glog.V(0).Infof("volume server %s:%d disk health changed, sending heartbeat", vs.store.Ip, vs.store.Port)
+			glog.V(0).Infof("volume server %s:%d disk locations/health changed, sending heartbeat", vs.store.Ip, vs.store.Port)
 			if err = stream.Send(vs.store.CollectHeartbeat()); err != nil {
 				glog.V(0).Infof("Volume Server Failed to update master after disk health change %s: %v", masterAddress, err)
+				return "", err
+			}
+			if err = stream.Send(vs.store.CollectErasureCodingHeartbeat()); err != nil {
+				glog.V(0).Infof("Volume Server Failed to update master EC shards after disk location change %s: %v", masterAddress, err)
 				return "", err
 			}
 		case <-ecShardTickChan.C:

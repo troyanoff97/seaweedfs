@@ -25,7 +25,7 @@ import (
 func (s *Store) CollectErasureCodingHeartbeat() *master_pb.Heartbeat {
 	var ecShardMessages []*master_pb.VolumeEcShardInformationMessage
 	collectionEcShardSize := make(map[string]int64)
-	for _, location := range s.Locations {
+	for _, location := range s.LocationsSnapshot() {
 		location.ecVolumesLock.RLock()
 		for _, ecShards := range location.ecVolumes {
 			ecShardMessages = append(ecShardMessages, ecShards.ToVolumeEcShardInformationMessage()...)
@@ -49,7 +49,7 @@ func (s *Store) CollectErasureCodingHeartbeat() *master_pb.Heartbeat {
 }
 
 func (s *Store) MountEcShards(collection string, vid needle.VolumeId, shardId erasure_coding.ShardId) error {
-	for _, location := range s.Locations {
+	for _, location := range s.LocationsSnapshot() {
 		if ecVolume, err := location.LoadEcShard(collection, vid, shardId); err == nil {
 			glog.V(0).Infof("MountEcShards %d.%d", vid, shardId)
 
@@ -88,7 +88,7 @@ func (s *Store) UnmountEcShards(vid needle.VolumeId, shardId erasure_coding.Shar
 		DiskType:    string(ecShard.DiskType),
 	}
 
-	for _, location := range s.Locations {
+	for _, location := range s.LocationsSnapshot() {
 		if deleted := location.UnloadEcShard(vid, shardId); deleted {
 			glog.V(0).Infof("UnmountEcShards %d.%d", vid, shardId)
 			s.DeletedEcShardsChan <- message
@@ -100,7 +100,7 @@ func (s *Store) UnmountEcShards(vid needle.VolumeId, shardId erasure_coding.Shar
 }
 
 func (s *Store) findEcShard(vid needle.VolumeId, shardId erasure_coding.ShardId) (*erasure_coding.EcVolumeShard, bool) {
-	for _, location := range s.Locations {
+	for _, location := range s.LocationsSnapshot() {
 		if v, found := location.FindEcShard(vid, shardId); found {
 			return v, found
 		}
@@ -109,7 +109,7 @@ func (s *Store) findEcShard(vid needle.VolumeId, shardId erasure_coding.ShardId)
 }
 
 func (s *Store) FindEcVolume(vid needle.VolumeId) (*erasure_coding.EcVolume, bool) {
-	for _, location := range s.Locations {
+	for _, location := range s.LocationsSnapshot() {
 		if s, found := location.FindEcVolume(vid); found {
 			return s, true
 		}
@@ -119,7 +119,7 @@ func (s *Store) FindEcVolume(vid needle.VolumeId) (*erasure_coding.EcVolume, boo
 
 // shardFiles is a list of shard files, which is used to return the shard locations
 func (s *Store) CollectEcShards(vid needle.VolumeId, shardFileNames []string) (ecVolume *erasure_coding.EcVolume, found bool) {
-	for _, location := range s.Locations {
+	for _, location := range s.LocationsSnapshot() {
 		if s, foundShards := location.CollectEcShards(vid, shardFileNames); foundShards {
 			ecVolume = s
 			found = true
@@ -129,13 +129,13 @@ func (s *Store) CollectEcShards(vid needle.VolumeId, shardFileNames []string) (e
 }
 
 func (s *Store) DestroyEcVolume(vid needle.VolumeId) {
-	for _, location := range s.Locations {
+	for _, location := range s.LocationsSnapshot() {
 		location.DestroyEcVolume(vid)
 	}
 }
 
 func (s *Store) ReadEcShardNeedle(vid needle.VolumeId, n *needle.Needle, onReadSizeFn func(size types.Size)) (int, error) {
-	for _, location := range s.Locations {
+	for _, location := range s.LocationsSnapshot() {
 		if localEcVolume, found := location.FindEcVolume(vid); found {
 
 			offset, size, intervals, err := localEcVolume.LocateEcShardNeedle(n.Id, localEcVolume.Version)
@@ -394,7 +394,7 @@ func (s *Store) recoverOneRemoteEcShardInterval(needleId types.NeedleId, ecVolum
 }
 
 func (s *Store) EcVolumes() (ecVolumes []*erasure_coding.EcVolume) {
-	for _, location := range s.Locations {
+	for _, location := range s.LocationsSnapshot() {
 		location.ecVolumesLock.RLock()
 		for _, v := range location.ecVolumes {
 			ecVolumes = append(ecVolumes, v)

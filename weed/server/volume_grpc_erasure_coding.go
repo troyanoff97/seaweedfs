@@ -102,7 +102,7 @@ func (vs *VolumeServer) VolumeEcShardsRebuild(ctx context.Context, req *volume_s
 
 	var rebuiltShardIds []uint32
 
-	for _, location := range vs.store.Locations {
+	for _, location := range vs.store.LocationsSnapshot() {
 		_, _, existingShardCount, err := checkEcVolumeStatus(baseFileName, location)
 		if err != nil {
 			return nil, err
@@ -207,7 +207,7 @@ func (vs *VolumeServer) VolumeEcShardsDelete(ctx context.Context, req *volume_se
 
 	glog.V(0).Infof("ec volume %s shard delete %v", bName, req.ShardIds)
 
-	for _, location := range vs.store.Locations {
+	for _, location := range vs.store.LocationsSnapshot() {
 		if err := deleteEcShardIdsForEachLocation(bName, location, req.ShardIds); err != nil {
 			glog.Errorf("deleteEcShards from %s %s.%v: %v", location.Directory, bName, req.ShardIds, err)
 			return nil, err
@@ -403,7 +403,7 @@ func (vs *VolumeServer) VolumeEcBlobDelete(ctx context.Context, req *volume_serv
 
 	resp := &volume_server_pb.VolumeEcBlobDeleteResponse{}
 
-	for _, location := range vs.store.Locations {
+	for _, location := range vs.store.LocationsSnapshot() {
 		if localEcVolume, found := location.FindEcVolume(needle.VolumeId(req.VolumeId)); found {
 
 			_, size, _, err := localEcVolume.LocateEcShardNeedle(types.NeedleId(req.FileKey), needle.Version(req.Version))
