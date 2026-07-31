@@ -95,7 +95,7 @@ func (vs *VolumeServer) VolumeEcShardsGenerate(ctx context.Context, req *volume_
 	// can sit on a sibling disk and would otherwise survive and be mounted
 	// against the new index at reconcile. Scans the cap for custom ratios.
 	vs.store.UnloadEcVolume(needle.VolumeId(req.VolumeId))
-	for _, loc := range vs.store.Locations {
+	for _, loc := range vs.store.LocationsSnapshot() {
 		dataBase := storage.VolumeFileName(loc.Directory, req.Collection, int(req.VolumeId))
 		idxBase := storage.VolumeFileName(loc.IdxDirectory, req.Collection, int(req.VolumeId))
 		if err := removeStaleEcArtifacts(dataBase, idxBase, erasure_coding.MaxShardCount); err != nil {
@@ -197,7 +197,7 @@ func (vs *VolumeServer) VolumeEcShardsRebuild(ctx context.Context, req *volume_s
 	var rebuildShardCount int
 	var otherLocationsWithShards []*storage.DiskLocation
 
-	for _, location := range vs.store.Locations {
+	for _, location := range vs.store.LocationsSnapshot() {
 		_, _, existingShardCount, err := checkEcVolumeStatus(baseFileName, location)
 		if err != nil {
 			return nil, err
@@ -303,7 +303,7 @@ func (vs *VolumeServer) VolumeEcShardsCopy(ctx context.Context, req *volume_serv
 	// Select the target location for storing EC shard files.
 	//
 	// When req.DiskId > 0 the caller is explicitly choosing a disk:
-	//   location = vs.store.Locations[req.DiskId]
+	//   location = vs.store.LocationsSnapshot()[req.DiskId]
 	//   (DiskId=1 → Locations[1], DiskId=2 → Locations[2], etc.)
 	//
 	// When req.DiskId == 0 (the protobuf default, meaning "not specified")
@@ -315,12 +315,12 @@ func (vs *VolumeServer) VolumeEcShardsCopy(ctx context.Context, req *volume_serv
 	// auto-select logic.
 	if req.DiskId > 0 {
 		// Validate disk ID is within bounds
-		if int(req.DiskId) >= len(vs.store.Locations) {
-			return nil, fmt.Errorf("invalid disk_id %d: only have %d disks", req.DiskId, len(vs.store.Locations))
+		if int(req.DiskId) >= len(vs.store.LocationsSnapshot()) {
+			return nil, fmt.Errorf("invalid disk_id %d: only have %d disks", req.DiskId, len(vs.store.LocationsSnapshot()))
 		}
 
 		// Use the specific disk location
-		location = vs.store.Locations[req.DiskId]
+		location = vs.store.LocationsSnapshot()[req.DiskId]
 		glog.V(1).Infof("Using disk %d for EC shard copy: %s", req.DiskId, location.Directory)
 	} else {
 		// Auto-select the target disk: prefer a disk that already has the
@@ -435,7 +435,7 @@ func (vs *VolumeServer) VolumeEcShardsDelete(ctx context.Context, req *volume_se
 			// shards, so a remote node retains no stale generation a fresh copy collides with.
 			glog.V(0).Infof("ec volume %s full teardown", bName)
 			vs.store.UnloadEcVolume(needle.VolumeId(req.VolumeId))
-			for _, location := range vs.store.Locations {
+			for _, location := range vs.store.LocationsSnapshot() {
 				dataBase := storage.VolumeFileName(location.Directory, req.Collection, int(req.VolumeId))
 				idxBase := storage.VolumeFileName(location.IdxDirectory, req.Collection, int(req.VolumeId))
 				if err := removeStaleEcArtifacts(dataBase, idxBase, erasure_coding.MaxShardCount); err != nil {
@@ -450,7 +450,7 @@ func (vs *VolumeServer) VolumeEcShardsDelete(ctx context.Context, req *volume_se
 		// unreadable .vif, so a stale run can never wipe a newer run's live shards.
 		// Unload and remove only the strictly-older disks, never node-wide.
 		glog.V(0).Infof("ec volume %s full teardown fenced at generation %d", bName, req.EncodeTsNs)
-		for _, location := range vs.store.Locations {
+		for _, location := range vs.store.LocationsSnapshot() {
 			dataBase := storage.VolumeFileName(location.Directory, req.Collection, int(req.VolumeId))
 			idxBase := storage.VolumeFileName(location.IdxDirectory, req.Collection, int(req.VolumeId))
 			diskGen, readable := readEcGenerationTsNs(dataBase, idxBase)
@@ -470,8 +470,8 @@ func (vs *VolumeServer) VolumeEcShardsDelete(ctx context.Context, req *volume_se
 
 	// Pass 1: delete the requested shard files (and any now-orphaned per-disk bitrot
 	// sidecars) on every disk.
-	for diskId, location := range vs.store.Locations {
-		if err := deleteEcShardIdsForEachLocation(bName, location, vs.store.Locations, req.ShardIds); err != nil {
+	for diskId, location := range vs.store.LocationsSnapshot() {
+		if err := deleteEcShardIdsForEachLocation(bName, location, vs.store.LocationsSnapshot(), req.ShardIds); err != nil {
 			glog.Errorf("deleteEcShards from disk_id:%d %s %s.%v: %v", diskId, location.Directory, bName, req.ShardIds, err)
 			return nil, err
 		}
@@ -486,8 +486,8 @@ func (vs *VolumeServer) VolumeEcShardsDelete(ctx context.Context, req *volume_se
 		hasEcxFile bool
 		hasIdxFile bool
 	}
-	statuses := make([]ecLocationStatus, 0, len(vs.store.Locations))
-	for _, location := range vs.store.Locations {
+	statuses := make([]ecLocationStatus, 0, len(vs.store.LocationsSnapshot()))
+	for _, location := range vs.store.LocationsSnapshot() {
 		hasEcxFile, hasIdxFile, existingShardCount, err := checkEcVolumeStatus(bName, location)
 		if err != nil {
 			return nil, err
@@ -875,7 +875,7 @@ func (vs *VolumeServer) VolumeEcBlobDelete(ctx context.Context, req *volume_serv
 
 	resp := &volume_server_pb.VolumeEcBlobDeleteResponse{}
 
-	for _, location := range vs.store.Locations {
+	for _, location := range vs.store.LocationsSnapshot() {
 		if localEcVolume, found := location.FindEcVolume(needle.VolumeId(req.VolumeId)); found {
 
 			_, size, _, err := localEcVolume.LocateEcShardNeedle(types.NeedleId(req.FileKey), needle.Version(req.Version))
@@ -983,7 +983,7 @@ func (vs *VolumeServer) VolumeEcShardsToVolume(ctx context.Context, req *volume_
 	}
 
 	var volumeLocation *storage.DiskLocation
-	for _, location := range vs.store.Locations {
+	for _, location := range vs.store.LocationsSnapshot() {
 		if candidate, found := location.FindEcVolume(needle.VolumeId(req.VolumeId)); found && candidate == v {
 			volumeLocation = location
 			break
@@ -1022,7 +1022,7 @@ func (vs *VolumeServer) VolumeEcShardsInfo(ctx context.Context, req *volume_serv
 	var primary *erasure_coding.EcVolume
 	var seenShards erasure_coding.ShardBits
 	shardInfos := make([]*volume_server_pb.EcShardInfo, 0, erasure_coding.MaxShardCount)
-	for _, location := range vs.store.Locations {
+	for _, location := range vs.store.LocationsSnapshot() {
 		ecv, ok := location.FindEcVolume(vid)
 		if !ok {
 			continue

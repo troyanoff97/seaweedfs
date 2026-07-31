@@ -480,7 +480,13 @@ func (v *Volume) RemoteStorageNameKey() (storageName, storageKey string) {
 func (v *Volume) IsReadOnly() bool {
 	v.noWriteLock.RLock()
 	defer v.noWriteLock.RUnlock()
-	return v.noWriteOrDelete || v.noWriteCanDelete || v.location.isDiskSpaceLow.Load()
+	if v.noWriteOrDelete || v.noWriteCanDelete {
+		return true
+	}
+	if v.location != nil && !v.location.IsHealthyForWrites() {
+		return true
+	}
+	return false
 }
 
 func (v *Volume) PersistReadOnly(readOnly bool) {

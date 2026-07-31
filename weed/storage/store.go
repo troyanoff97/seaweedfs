@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/seaweedfs/seaweedfs/weed/pb"
 	"github.com/seaweedfs/seaweedfs/weed/storage/volume_info"
@@ -58,27 +59,40 @@ type ReadOption struct {
  * A VolumeServer contains one Store
  */
 type Store struct {
-	MasterAddress       pb.ServerAddress
-	grpcDialOption      grpc.DialOption
-	volumeSizeLimit     uint64      // read from the master
-	preallocate         atomic.Bool // read from the master
-	Ip                  string
-	Port                int
-	GrpcPort            int
-	PublicUrl           string
-	Id                  string // volume server id, independent of ip:port for stable identification
-	Locations           []*DiskLocation
-	dataCenter          string // optional information, overwriting master setting if exists
-	rack                string // optional information, overwriting master setting if exists
-	connected           bool
-	NeedleMapKind       NeedleMapKind
-	State               *State
-	StateUpdateChan     chan *volume_server_pb.VolumeServerState
-	NewVolumesChan      chan *master_pb.VolumeShortInformationMessage
-	DeletedVolumesChan  chan *master_pb.VolumeShortInformationMessage
-	NewEcShardsChan     chan *master_pb.VolumeEcShardInformationMessage
-	DeletedEcShardsChan chan *master_pb.VolumeEcShardInformationMessage
-	isStopping          bool
+	MasterAddress        pb.ServerAddress
+	grpcDialOption       grpc.DialOption
+	volumeSizeLimit      uint64      // read from the master
+	preallocate          atomic.Bool // read from the master
+	Ip                   string
+	Port                 int
+	GrpcPort             int
+	PublicUrl            string
+	Id                   string // volume server id, independent of ip:port for stable identification
+	Locations            []*DiskLocation
+	locationsMu          sync.RWMutex
+	dataCenter           string // optional information, overwriting master setting if exists
+	rack                 string // optional information, overwriting master setting if exists
+	connected            bool
+	NeedleMapKind        NeedleMapKind
+	State                *State
+	StateUpdateChan      chan *volume_server_pb.VolumeServerState
+	NewVolumesChan       chan *master_pb.VolumeShortInformationMessage
+	DeletedVolumesChan   chan *master_pb.VolumeShortInformationMessage
+	NewEcShardsChan      chan *master_pb.VolumeEcShardInformationMessage
+	DeletedEcShardsChan  chan *master_pb.VolumeEcShardInformationMessage
+	DiskHealthChangeChan chan struct{}
+	isStopping           bool
+	diskConfigPath       string
+	diskProbeConfig      stats.DiskIOProbeConfig
+}
+
+// LocationsSnapshot returns a stable copy of the currently active disk locations.
+func (s *Store) LocationsSnapshot() []*DiskLocation {
+	s.locationsMu.RLock()
+	defer s.locationsMu.RUnlock()
+	locations := make([]*DiskLocation, len(s.Locations))
+	copy(locations, s.Locations)
+	return locations
 }
 
 func (s *Store) String() (str string) {
@@ -121,6 +135,10 @@ func NewStore(
 			tags = diskTags[i]
 		}
 		location := NewDiskLocation(dirnames[i], int32(maxVolumeCounts[i]), minFreeSpaces[i], idxFolder, diskTypes[i], tags, diskProbeConfig)
+		if err := util.TestFolderWritable(location.Directory); err != nil {
+			glog.Errorf("volume folder %s is not writable: %v; starting with this location marked unhealthy", location.Directory, err)
+			location.SetInitialHealthFromStartup(err)
+		}
 		s.Locations = append(s.Locations, location)
 		stats.VolumeServerMaxVolumeCounter.Add(float64(maxVolumeCounts[i]))
 
@@ -193,6 +211,18 @@ func NewStore(
 		glog.Fatalf("failed to resolve state for volume %s: %v", id, err)
 	}
 
+	s.diskProbeConfig = diskProbeConfig
+	s.DiskHealthChangeChan = make(chan struct{}, 1)
+	for _, location := range s.LocationsSnapshot() {
+		loc := location
+		loc.SetOnDiskHealthChange(func() {
+			select {
+			case s.DiskHealthChangeChan <- struct{}{}:
+			default:
+			}
+		})
+	}
+
 	return
 }
 
@@ -239,7 +269,7 @@ func (s *Store) AddVolume(volumeId needle.VolumeId, collection string, needleMap
 }
 
 func (s *Store) DeleteCollection(collection string) (e error) {
-	for _, location := range s.Locations {
+	for _, location := range s.LocationsSnapshot() {
 		e = location.DeleteCollectionFromDiskLocation(collection)
 		if e != nil {
 			return
@@ -251,7 +281,7 @@ func (s *Store) DeleteCollection(collection string) (e error) {
 }
 
 func (s *Store) findVolume(vid needle.VolumeId) *Volume {
-	for _, location := range s.Locations {
+	for _, location := range s.LocationsSnapshot() {
 		if v, found := location.FindVolume(vid); found {
 			return v
 		}
@@ -260,11 +290,11 @@ func (s *Store) findVolume(vid needle.VolumeId) *Volume {
 }
 func (s *Store) FindFreeLocation(filterFn func(location *DiskLocation) bool) (ret *DiskLocation) {
 	max := int32(0)
-	for _, location := range s.Locations {
+	for _, location := range s.LocationsSnapshot() {
 		if filterFn != nil && !filterFn(location) {
 			continue
 		}
-		if location.isDiskSpaceLow.Load() {
+		if !location.IsHealthyForWrites() {
 			continue
 		}
 		currentFreeCount := location.MaxVolumeCount - int32(location.VolumesLen())
@@ -287,7 +317,7 @@ func (s *Store) addVolume(vid needle.VolumeId, collection string, needleMapKind 
 	var location *DiskLocation
 	var diskId uint32
 	var minVolCount int
-	for i, loc := range s.Locations {
+	for i, loc := range s.LocationsSnapshot() {
 		if loc.DiskType == diskType && s.hasFreeDiskLocation(loc) {
 			volCount := loc.LocalVolumesLen()
 			if location == nil || volCount < minVolCount {
@@ -316,6 +346,9 @@ func (s *Store) addVolume(vid needle.VolumeId, collection string, needleMapKind 
 			}
 			return nil
 		} else {
+			if IsDiskError(err) {
+				location.ReportDiskError(err)
+			}
 			return err
 		}
 	}
@@ -324,8 +357,7 @@ func (s *Store) addVolume(vid needle.VolumeId, collection string, needleMapKind 
 
 // hasFreeDiskLocation checks if a disk location has free space
 func (s *Store) hasFreeDiskLocation(location *DiskLocation) bool {
-	// Check if disk space is low first
-	if location.isDiskSpaceLow.Load() {
+	if !location.IsHealthyForWrites() {
 		return false
 	}
 
@@ -344,7 +376,7 @@ func (s *Store) hasFreeDiskLocation(location *DiskLocation) bool {
 }
 
 func (s *Store) VolumeInfos() (allStats []*VolumeInfo) {
-	for _, location := range s.Locations {
+	for _, location := range s.LocationsSnapshot() {
 		stats := collectStatsForOneLocation(location)
 		allStats = append(allStats, stats...)
 	}
@@ -421,7 +453,7 @@ func (s *Store) CollectHeartbeat() *master_pb.Heartbeat {
 	collectionVolumeSize := make(map[string]int64)
 	collectionVolumeDeletedBytes := make(map[string]int64)
 	collectionVolumeReadOnlyCount := make(map[string]map[string]uint8)
-	for diskID, location := range s.Locations {
+	for diskID, location := range s.LocationsSnapshot() {
 		if location.isDiskUnavailable.Load() {
 			continue
 		}
@@ -552,11 +584,11 @@ func (s *Store) CollectHeartbeat() *master_pb.Heartbeat {
 	ecVolumeMessages, deletedEcVolumes := s.deleteExpiredEcVolumes()
 
 	var uuidList []string
-	for _, loc := range s.Locations {
+	for _, loc := range s.LocationsSnapshot() {
 		uuidList = append(uuidList, loc.DirectoryUuid)
 	}
 	var diskTags []*master_pb.DiskTag
-	for diskID, loc := range s.Locations {
+	for diskID, loc := range s.LocationsSnapshot() {
 		diskTags = append(diskTags, &master_pb.DiskTag{
 			DiskId:         uint32(diskID),
 			Tags:           append([]string(nil), loc.Tags...),
@@ -602,7 +634,7 @@ func (s *Store) CollectHeartbeat() *master_pb.Heartbeat {
 }
 
 func (s *Store) deleteExpiredEcVolumes() (ecShards, deleted []*master_pb.VolumeEcShardInformationMessage) {
-	for diskId, location := range s.Locations {
+	for diskId, location := range s.LocationsSnapshot() {
 		if location.isDiskUnavailable.Load() {
 			continue
 		}
@@ -640,7 +672,7 @@ func (s *Store) deleteExpiredEcVolumes() (ecShards, deleted []*master_pb.VolumeE
 
 func (s *Store) SetStopping() {
 	s.isStopping = true
-	for _, location := range s.Locations {
+	for _, location := range s.LocationsSnapshot() {
 		location.SetStopping()
 	}
 }
@@ -650,13 +682,13 @@ func (s *Store) IsStopping() bool {
 }
 
 func (s *Store) LoadNewVolumes() {
-	for _, location := range s.Locations {
+	for _, location := range s.LocationsSnapshot() {
 		location.loadExistingVolumes(s.NeedleMapKind, 0)
 	}
 }
 
 func (s *Store) Close() {
-	for _, location := range s.Locations {
+	for _, location := range s.LocationsSnapshot() {
 		location.Close()
 	}
 }
@@ -752,7 +784,7 @@ func (s *Store) MarkVolumeWritable(i needle.VolumeId) error {
 }
 
 func (s *Store) MountVolume(i needle.VolumeId) error {
-	for diskId, location := range s.Locations {
+	for diskId, location := range s.LocationsSnapshot() {
 		if found := location.LoadVolume(uint32(diskId), i, s.NeedleMapKind); found == true {
 			glog.V(0).Infof("mount volume %d", i)
 			v := s.findVolume(i)
@@ -780,7 +812,7 @@ func (s *Store) UnmountVolume(i needle.VolumeId) error {
 	// twin cannot survive and re-register as the volume's content. A no-op unmount
 	// (no copy present) is not an error, matching the prior behavior.
 	var errs []error
-	for _, location := range s.Locations {
+	for _, location := range s.LocationsSnapshot() {
 		v, found := location.FindVolume(i)
 		if !found {
 			continue
@@ -816,7 +848,7 @@ func (s *Store) DeleteVolume(i needle.VolumeId, onlyEmpty bool, keepRemoteData b
 	// guard) cannot survive a delete and re-register as the volume's content.
 	deletedAny := false
 	var errs []error
-	for _, location := range s.Locations {
+	for _, location := range s.LocationsSnapshot() {
 		v, found := location.FindVolume(i)
 		if !found {
 			continue
@@ -859,7 +891,7 @@ func (s *Store) DeleteVolume(i needle.VolumeId, onlyEmpty bool, keepRemoteData b
 
 func (s *Store) ConfigureVolume(i needle.VolumeId, replication string) error {
 
-	for _, location := range s.Locations {
+	for _, location := range s.LocationsSnapshot() {
 		fileInfo, found := location.LocateVolume(i)
 		if !found {
 			continue
@@ -904,7 +936,7 @@ func (s *Store) MaybeAdjustVolumeMax() (hasChanges bool) {
 		return
 	}
 	var newMaxVolumeCount int32
-	for _, diskLocation := range s.Locations {
+	for _, diskLocation := range s.LocationsSnapshot() {
 		if diskLocation.OriginalMaxVolumeCount == 0 {
 			currentMaxVolumeCount := atomic.LoadInt32(&diskLocation.MaxVolumeCount)
 			diskStatus := stats.NewDiskStatus(diskLocation.Directory)
@@ -939,4 +971,39 @@ func (s *Store) MaybeAdjustVolumeMax() (hasChanges bool) {
 	}
 	stats.VolumeServerMaxVolumeCounter.Set(float64(newMaxVolumeCount))
 	return
+}
+
+
+// DiskHealthStatus is JSON-friendly disk health for /status and monitoring.
+type DiskHealthStatus struct {
+	Directory         string   `json:"Directory"`
+	Healthy           bool     `json:"Healthy"`
+	HealthyForWrites  bool     `json:"HealthyForWrites"`
+	DiskSpaceLow      bool     `json:"DiskSpaceLow"`
+	LastError         string   `json:"LastError,omitempty"`
+	UnhealthySince    string   `json:"UnhealthySince,omitempty"`
+	ReadOnlyVolumeIds []uint32 `json:"ReadOnlyVolumeIds,omitempty"`
+}
+
+func (s *Store) DiskHealthStatuses() []DiskHealthStatus {
+	locations := s.LocationsSnapshot()
+	result := make([]DiskHealthStatus, 0, len(locations))
+	for _, loc := range locations {
+		snap := loc.HealthSnapshot()
+		status := DiskHealthStatus{
+			Directory:         snap.Directory,
+			Healthy:           snap.Healthy,
+			HealthyForWrites:  loc.IsHealthyForWrites(),
+			DiskSpaceLow:      snap.DiskSpaceLow,
+			ReadOnlyVolumeIds: snap.ReadOnlyVolumeIds,
+		}
+		if snap.LastError != nil {
+			status.LastError = snap.LastError.Error()
+		}
+		if !snap.UnhealthySince.IsZero() {
+			status.UnhealthySince = snap.UnhealthySince.UTC().Format(time.RFC3339)
+		}
+		result = append(result, status)
+	}
+	return result
 }

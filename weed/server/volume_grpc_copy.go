@@ -503,7 +503,7 @@ func (vs *VolumeServer) CopyFile(req *volume_server_pb.CopyFileRequest, stream v
 		}
 
 		baseFileName := erasure_coding.EcShardBaseFileName(req.Collection, int(req.VolumeId)) + req.Ext
-		for _, location := range vs.store.Locations {
+		for _, location := range vs.store.LocationsSnapshot() {
 			tName := util.Join(location.Directory, baseFileName)
 			if util.FileExists(tName) {
 				fileName = tName
@@ -657,13 +657,13 @@ func (vs *VolumeServer) ReceiveFile(stream volume_server_pb.VolumeServer_Receive
 				// disk.
 				var targetLocation *storage.DiskLocation
 				if fileInfo.DiskId > 0 {
-					if fileInfo.DiskId >= uint32(len(vs.store.Locations)) {
-						glog.Errorf("ReceiveFile: invalid disk_id %d: only have %d disks", fileInfo.DiskId, len(vs.store.Locations))
+					if fileInfo.DiskId >= uint32(len(vs.store.LocationsSnapshot())) {
+						glog.Errorf("ReceiveFile: invalid disk_id %d: only have %d disks", fileInfo.DiskId, len(vs.store.LocationsSnapshot()))
 						return stream.SendAndClose(&volume_server_pb.ReceiveFileResponse{
-							Error: fmt.Sprintf("invalid disk_id %d: only have %d disks", fileInfo.DiskId, len(vs.store.Locations)),
+							Error: fmt.Sprintf("invalid disk_id %d: only have %d disks", fileInfo.DiskId, len(vs.store.LocationsSnapshot())),
 						})
 					}
-					targetLocation = vs.store.Locations[fileInfo.DiskId]
+					targetLocation = vs.store.LocationsSnapshot()[fileInfo.DiskId]
 				} else {
 					// Pass the build's default data-shard count for the helper's
 					// free-slot maths; it's a parameter so custom-ratio builds

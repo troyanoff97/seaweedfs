@@ -84,6 +84,7 @@ func NewVolumeServer(adminMux, publicMux *http.ServeMux, ip string,
 	ldbTimeout int64,
 	allowUntrustedRemoteEndpoints bool,
 	diskProbeConfig stats.DiskIOProbeConfig,
+	diskConfigPath string,
 ) *VolumeServer {
 
 	v := util.GetViper()
@@ -136,12 +137,16 @@ func NewVolumeServer(adminMux, publicMux *http.ServeMux, ip string,
 	vs.checkWithMaster()
 
 	vs.store = storage.NewStore(vs.grpcDialOption, ip, port, grpcPort, publicUrl, id, folders, maxCounts, minFreeSpaces, idxFolder, vs.needleMapKind, diskTypes, diskTags, ldbTimeout, diskProbeConfig)
+	vs.store.SetDiskConfigPath(diskConfigPath)
 	vs.guard = security.NewGuard(whiteList, signingKey, expiresAfterSec, readSigningKey, readExpiresAfterSec)
 
 	handleStaticResources(adminMux)
 	adminMux.HandleFunc("/status", requestIDMiddleware(vs.statusHandler))
 	adminMux.HandleFunc("/healthz", requestIDMiddleware(vs.healthzHandler))
 	adminMux.HandleFunc("/readyz", requestIDMiddleware(vs.healthzHandler))
+	adminMux.HandleFunc("/admin/disk/add", requestIDMiddleware(vs.guard.WhiteList(vs.adminDiskAddHandler)))
+	adminMux.HandleFunc("/admin/disk/remove", requestIDMiddleware(vs.guard.WhiteList(vs.adminDiskRemoveHandler)))
+	adminMux.HandleFunc("/admin/disk/list", requestIDMiddleware(vs.guard.WhiteList(vs.adminDiskListHandler)))
 	if signingKey == "" || enableUiAccess {
 		// only expose the volume server details for safe environments
 		adminMux.HandleFunc("/ui/index.html", requestIDMiddleware(vs.uiStatusHandler))

@@ -37,6 +37,9 @@ func (ms *MasterServer) RegisterUuids(heartbeat *master_pb.Heartbeat) (duplicate
 	}
 	// find whether new uuid exists
 	for k, v := range ms.Topo.UuidMap {
+		if k == key {
+			continue
+		}
 		sort.Strings(v)
 		for _, id := range heartbeat.LocationUuids {
 			index := sort.SearchStrings(v, id)
@@ -149,16 +152,6 @@ func (ms *MasterServer) SendHeartbeat(stream master_pb.Seaweed_SendHeartbeatServ
 			rack := dc.GetOrCreateRack(rackName)
 			dn = rack.GetOrCreateDataNode(heartbeat.Ip, int(heartbeat.Port), int(heartbeat.GrpcPort), heartbeat.PublicUrl, heartbeat.Id, heartbeat.MaxVolumeCounts)
 			glog.V(0).Infof("added volume server %d: %v (id=%s, ip=%v:%d) %v", dn.Counter, dn.Id(), heartbeat.Id, heartbeat.GetIp(), heartbeat.GetPort(), heartbeat.LocationUuids)
-			uuidlist, err := ms.RegisterUuids(heartbeat)
-			if err != nil {
-				if stream_err := stream.Send(&master_pb.HeartbeatResponse{
-					DuplicatedUuids: uuidlist,
-				}); stream_err != nil {
-					glog.Warningf("SendHeartbeat.Send DuplicatedDirectory response to %s:%d %v", dn.Ip, dn.Port, stream_err)
-					return stream_err
-				}
-				return err
-			}
 
 			if err := stream.Send(&master_pb.HeartbeatResponse{
 				VolumeSizeLimit: uint64(ms.option.VolumeSizeLimitMB) * 1024 * 1024,
@@ -169,6 +162,23 @@ func (ms *MasterServer) SendHeartbeat(stream master_pb.Seaweed_SendHeartbeatServ
 			}
 			stats.MasterReceivedHeartbeatCounter.WithLabelValues("dataNode").Inc()
 			dn.Counter++
+		}
+
+		// Full heartbeats carry location UUIDs. Refresh them on every disk
+		// add/remove, including removal of the last location.
+		isFullHeartbeat := heartbeat.Ip != "" &&
+			(len(heartbeat.LocationUuids) > 0 || heartbeat.HasNoVolumes || heartbeat.MaxVolumeCounts != nil)
+		if isFullHeartbeat {
+			uuidlist, registerErr := ms.RegisterUuids(heartbeat)
+			if registerErr != nil {
+				if streamErr := stream.Send(&master_pb.HeartbeatResponse{
+					DuplicatedUuids: uuidlist,
+				}); streamErr != nil {
+					glog.Warningf("SendHeartbeat.Send DuplicatedDirectory response to %s:%d %v", dn.Ip, dn.Port, streamErr)
+					return streamErr
+				}
+				return registerErr
+			}
 		}
 
 		dn.AdjustMaxVolumeCounts(heartbeat.MaxVolumeCounts)

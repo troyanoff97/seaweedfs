@@ -383,6 +383,14 @@ var (
 			Help:      "Disk error status",
 		}, []string{"name", "type"})
 
+	VolumeServerDiskHealthyGauge = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Namespace: Namespace,
+			Subsystem: subsystemVolumeServer,
+			Name:      "disk_healthy",
+			Help:      "1 if the disk location is healthy for writes, 0 otherwise.",
+		}, []string{"dir"})
+
 	VolumeServerConcurrentDownloadLimit = prometheus.NewGauge(
 		prometheus.GaugeOpts{
 			Namespace: Namespace,
@@ -899,6 +907,7 @@ func init() {
 	Gather.MustRegister(VolumeServerDiskSizeGauge)
 	Gather.MustRegister(VolumeServerResourceGauge)
 	Gather.MustRegister(VolumeServerDiskErrorGauge)
+	Gather.MustRegister(VolumeServerDiskHealthyGauge)
 	Gather.MustRegister(VolumeServerConcurrentDownloadLimit)
 	Gather.MustRegister(VolumeServerConcurrentUploadLimit)
 	Gather.MustRegister(VolumeServerInFlightDownloadSize)

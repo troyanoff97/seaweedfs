@@ -70,7 +70,7 @@ func (s *Store) FindEcShardTargetLocation(collection string, vid needle.VolumeId
 		bestTier int
 		bestFree int32
 	)
-	for _, loc := range s.Locations {
+	for _, loc := range s.LocationsSnapshot() {
 		if loc.isDiskSpaceLow.Load() {
 			continue
 		}
@@ -137,7 +137,7 @@ func ecFreeShardCount(loc *DiskLocation, dataShardCount int) int32 {
 func (s *Store) CollectErasureCodingHeartbeat() *master_pb.Heartbeat {
 	var ecShardMessages []*master_pb.VolumeEcShardInformationMessage
 	collectionEcShardSize := make(map[string]int64)
-	for diskId, location := range s.Locations {
+	for diskId, location := range s.LocationsSnapshot() {
 		location.ecVolumesLock.RLock()
 		for _, ecShards := range location.ecVolumes {
 			ecShardMessages = append(ecShardMessages, ecShards.ToVolumeEcShardInformationMessage(uint32(diskId))...)
@@ -184,7 +184,7 @@ func (s *Store) MountEcShards(collection string, vid needle.VolumeId, shardId er
 	}
 	var failures []diskError
 
-	for diskId, location := range s.Locations {
+	for diskId, location := range s.LocationsSnapshot() {
 		idxDir := location.IdxDirectory
 		if ecxFound {
 			// Fast path: if findEcxIdxDirForVolume already pointed at
@@ -259,7 +259,7 @@ func (s *Store) UnmountEcShards(vid needle.VolumeId, shardId erasure_coding.Shar
 	// mounted and heartbeating. Emit one deletion delta per disk.
 	unmountedAny := false
 	var lastErr error
-	for diskId, location := range s.Locations {
+	for diskId, location := range s.LocationsSnapshot() {
 		ecShard, found := location.FindEcShard(vid, shardId)
 		if !found {
 			continue
@@ -305,7 +305,7 @@ func (s *Store) UnmountEcShards(vid needle.VolumeId, shardId erasure_coding.Shar
 }
 
 func (s *Store) findEcShard(vid needle.VolumeId, shardId erasure_coding.ShardId) (diskId uint32, shard *erasure_coding.EcVolumeShard, found bool) {
-	for diskId, location := range s.Locations {
+	for diskId, location := range s.LocationsSnapshot() {
 		if v, found := location.FindEcShard(vid, shardId); found {
 			return uint32(diskId), v, found
 		}
@@ -324,7 +324,7 @@ func (s *Store) FindEcShard(vid needle.VolumeId, shardId erasure_coding.ShardId)
 // that owns the bytes served: on a multi-disk server one vid can hold shards
 // from different encode runs across disks, so a first-match volume can differ.
 func (s *Store) FindEcVolumeWithShard(vid needle.VolumeId, shardId erasure_coding.ShardId) (*erasure_coding.EcVolume, *erasure_coding.EcVolumeShard, bool) {
-	for _, location := range s.Locations {
+	for _, location := range s.LocationsSnapshot() {
 		if shard, found := location.FindEcShard(vid, shardId); found {
 			if ev, ok := location.FindEcVolume(vid); ok {
 				return ev, shard, true
@@ -335,7 +335,7 @@ func (s *Store) FindEcVolumeWithShard(vid needle.VolumeId, shardId erasure_codin
 }
 
 func (s *Store) FindEcVolume(vid needle.VolumeId) (*erasure_coding.EcVolume, bool) {
-	for _, location := range s.Locations {
+	for _, location := range s.LocationsSnapshot() {
 		if s, found := location.FindEcVolume(vid); found {
 			return s, true
 		}
@@ -349,7 +349,7 @@ func (s *Store) FindEcVolume(vid needle.VolumeId) (*erasure_coding.EcVolume, boo
 // the mount (e.g., the ReceiveFile mounted-volume guard).
 func (s *Store) FindEcVolumeDiskIds(vid needle.VolumeId) []uint32 {
 	var ids []uint32
-	for diskId, location := range s.Locations {
+	for diskId, location := range s.LocationsSnapshot() {
 		if _, found := location.FindEcVolume(vid); found {
 			ids = append(ids, uint32(diskId))
 		}
@@ -359,7 +359,7 @@ func (s *Store) FindEcVolumeDiskIds(vid needle.VolumeId) []uint32 {
 
 // shardFiles is a list of shard files, which is used to return the shard locations
 func (s *Store) CollectEcShards(vid needle.VolumeId, shardFileNames []string) (ecVolume *erasure_coding.EcVolume, found bool) {
-	for _, location := range s.Locations {
+	for _, location := range s.LocationsSnapshot() {
 		if s, foundShards := location.CollectEcShards(vid, shardFileNames); foundShards {
 			ecVolume = s
 			found = true
@@ -369,7 +369,7 @@ func (s *Store) CollectEcShards(vid needle.VolumeId, shardFileNames []string) (e
 }
 
 func (s *Store) DestroyEcVolume(vid needle.VolumeId) {
-	for _, location := range s.Locations {
+	for _, location := range s.LocationsSnapshot() {
 		location.DestroyEcVolume(vid)
 	}
 }
@@ -377,13 +377,13 @@ func (s *Store) DestroyEcVolume(vid needle.VolumeId) {
 // UnloadEcVolume drops any in-memory EcVolume for vid from every disk and closes
 // its fds without deleting files, so a following unlink frees the inodes.
 func (s *Store) UnloadEcVolume(vid needle.VolumeId) {
-	for _, location := range s.Locations {
+	for _, location := range s.LocationsSnapshot() {
 		location.unloadEcVolume(vid)
 	}
 }
 
 func (s *Store) ReadEcShardNeedle(vid needle.VolumeId, n *needle.Needle, onReadSizeFn func(size types.Size)) (int, error) {
-	for _, location := range s.Locations {
+	for _, location := range s.LocationsSnapshot() {
 		if localEcVolume, found := location.FindEcVolume(vid); found {
 
 			offset, size, intervals, err := localEcVolume.LocateEcShardNeedle(n.Id, localEcVolume.Version)
@@ -747,7 +747,7 @@ func (s *Store) recoverOneRemoteEcShardInterval(needleId types.NeedleId, ecVolum
 }
 
 func (s *Store) EcVolumes() (ecVolumes []*erasure_coding.EcVolume) {
-	for _, location := range s.Locations {
+	for _, location := range s.LocationsSnapshot() {
 		location.ecVolumesLock.RLock()
 		for _, v := range location.ecVolumes {
 			ecVolumes = append(ecVolumes, v)

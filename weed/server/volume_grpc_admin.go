@@ -390,7 +390,7 @@ func (vs *VolumeServer) VolumeServerStatus(ctx context.Context, req *volume_serv
 		Rack:         vs.rack,
 	}
 
-	for _, loc := range vs.store.Locations {
+	for _, loc := range vs.store.LocationsSnapshot() {
 		if dir, e := filepath.Abs(loc.Directory); e == nil {
 			resp.DiskStatuses = append(resp.DiskStatuses, stats.NewDiskStatus(dir))
 		}
