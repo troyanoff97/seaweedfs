@@ -51,7 +51,7 @@ func TestFolderWritable(folder string) (err error) {
 		_ = os.Remove(probeName)
 		return fmt.Errorf("close write probe in %s: %w", folder, err)
 	}
-	if err = os.Remove(probeName); err != nil {
+	if err = os.Remove(probeName); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("remove write probe in %s: %w", folder, err)
 	}
 	glog.V(4).Infof("folder %s passed real write probe", folder)

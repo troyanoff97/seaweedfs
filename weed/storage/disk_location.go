@@ -61,6 +61,8 @@ type DiskLocation struct {
 	onDiskHealthChange func()
 	diskProbeConfig    stats.DiskIOProbeConfig
 	closeCh            chan struct{}
+	closeOnce          sync.Once
+	healthWg           sync.WaitGroup
 	inactive           atomic.Bool
 }
 
@@ -135,7 +137,9 @@ func NewDiskLocationOrError(dir string, maxVolumeCount int32, minFreeSpace util.
 	location.volumes = make(map[needle.VolumeId]*Volume)
 	location.ecVolumes = make(map[needle.VolumeId]*erasure_coding.EcVolume)
 	location.closeCh = make(chan struct{})
+	location.healthWg.Add(1)
 	go func() {
+		defer location.healthWg.Done()
 		location.checkHealthAndDiskSpace()
 		for {
 			select {
@@ -668,8 +672,12 @@ func (l *DiskLocation) Close() {
 	}
 	l.ecVolumesLock.Unlock()
 
-	close(l.closeCh)
-	return
+	// Stop health/probe loop and wait so write-probe temp files cannot race
+	// with process shutdown or test TempDir cleanup.
+	l.closeOnce.Do(func() {
+		close(l.closeCh)
+	})
+	l.healthWg.Wait()
 }
 
 func (l *DiskLocation) LocateVolume(vid needle.VolumeId) (os.DirEntry, bool) {
