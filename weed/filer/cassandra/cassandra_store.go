@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	gocql "github.com/apache/cassandra-gocql-driver/v2"
@@ -18,10 +19,19 @@ func init() {
 	filer.Stores = append(filer.Stores, &CassandraStore{})
 }
 
+const (
+	// Defaults chosen so a stuck Cassandra/network path fails fast instead of
+	// holding filer request goroutines (and their sockets/FDs) for a long time.
+	defaultQueryTimeoutMs   = 10000
+	defaultConnectTimeoutMs = 5000
+	socketKeepalive         = 30 * time.Second
+)
+
 type CassandraStore struct {
 	cluster                 *gocql.ClusterConfig
 	session                 *gocql.Session
 	superLargeDirectoryHash map[string]string
+	queryTimeout            time.Duration
 }
 
 func (store *CassandraStore) GetName() string {
@@ -37,6 +47,8 @@ func (store *CassandraStore) Initialize(configuration util.Configuration, prefix
 		configuration.GetStringSlice(prefix+"superLargeDirectories"),
 		configuration.GetString(prefix+"localDC"),
 		configuration.GetInt(prefix+"connection_timeout_millisecond"),
+		configuration.GetInt(prefix+"connect_timeout_millisecond"),
+		configuration.GetString(prefix+"consistency"),
 	)
 }
 
@@ -45,24 +57,81 @@ func (store *CassandraStore) isSuperLargeDirectory(dir string) (dirHash string, 
 	return
 }
 
-func (store *CassandraStore) initialize(keyspace string, hosts []string, username string, password string, superLargeDirectories []string, localDC string, timeout int) (err error) {
+// resolveCassandraTimeouts returns query and dial timeouts.
+// queryMs/connectMs <= 0 fall back to safe defaults so a missing config cannot
+// disable client-side deadlines (Duration(0) would risk unbounded waits).
+func resolveCassandraTimeouts(queryMs, connectMs int) (queryTimeout, connectTimeout time.Duration) {
+	if queryMs <= 0 {
+		queryMs = defaultQueryTimeoutMs
+	}
+	if connectMs <= 0 {
+		connectMs = defaultConnectTimeoutMs
+	}
+	// Dial should not exceed the query budget.
+	if connectMs > queryMs {
+		connectMs = queryMs
+	}
+	return time.Duration(queryMs) * time.Millisecond, time.Duration(connectMs) * time.Millisecond
+}
+
+func parseCassandraConsistency(name string) gocql.Consistency {
+	switch strings.ToUpper(strings.TrimSpace(name)) {
+	case "", "LOCAL_QUORUM":
+		return gocql.LocalQuorum
+	case "QUORUM":
+		return gocql.Quorum
+	case "LOCAL_ONE":
+		return gocql.LocalOne
+	case "ONE":
+		return gocql.One
+	case "TWO":
+		return gocql.Two
+	case "THREE":
+		return gocql.Three
+	case "ALL":
+		return gocql.All
+	case "EACH_QUORUM":
+		return gocql.EachQuorum
+	case "ANY":
+		return gocql.Any
+	default:
+		glog.Warningf("cassandra: unknown consistency %q, using LOCAL_QUORUM", name)
+		return gocql.LocalQuorum
+	}
+}
+
+func (store *CassandraStore) initialize(keyspace string, hosts []string, username string, password string, superLargeDirectories []string, localDC string, queryTimeoutMs int, connectTimeoutMs int, consistencyName string) (err error) {
 	store.cluster = gocql.NewCluster(hosts...)
 	if username != "" && password != "" {
 		store.cluster.Authenticator = gocql.PasswordAuthenticator{Username: username, Password: password}
 	}
 	store.cluster.Keyspace = keyspace
-	store.cluster.Timeout = time.Duration(timeout) * time.Millisecond
-	glog.V(0).Infof("timeout = %d", timeout)
+
+	configuredQueryMs := queryTimeoutMs
+	queryTimeout, connectTimeout := resolveCassandraTimeouts(queryTimeoutMs, connectTimeoutMs)
+	store.queryTimeout = queryTimeout
+	store.cluster.Timeout = queryTimeout
+	store.cluster.ConnectTimeout = connectTimeout
+	store.cluster.WriteTimeout = queryTimeout
+	store.cluster.SocketKeepalive = socketKeepalive
+
+	if configuredQueryMs <= 0 {
+		glog.Warningf("cassandra: connection_timeout_millisecond unset/<=0; using default query timeout %v (connect %v)", queryTimeout, connectTimeout)
+	} else if configuredQueryMs > 15000 {
+		glog.Warningf("cassandra: connection_timeout_millisecond=%d is high; hung meta requests can accumulate FDs/memory. Consider 5000-10000 unless migration still needs a longer budget", configuredQueryMs)
+	}
+	glog.V(0).Infof("cassandra timeouts: query=%v connect=%v consistency=%q", queryTimeout, connectTimeout, strings.TrimSpace(consistencyName))
+
 	fallback := gocql.RoundRobinHostPolicy()
 	if localDC != "" {
 		fallback = gocql.DCAwareRoundRobinPolicy(localDC)
 	}
 	store.cluster.PoolConfig.HostSelectionPolicy = gocql.TokenAwareHostPolicy(fallback)
-	store.cluster.Consistency = gocql.LocalQuorum
+	store.cluster.Consistency = parseCassandraConsistency(consistencyName)
 
 	store.session, err = store.cluster.CreateSession()
 	if err != nil {
-		glog.V(0).Infof("Failed to open cassandra store, hosts %v, keyspace %s", hosts, keyspace)
+		glog.V(0).Infof("Failed to open cassandra store, hosts %v, keyspace %s: %v", hosts, keyspace, err)
 	}
 
 	// set directory hash
@@ -78,6 +147,22 @@ func (store *CassandraStore) initialize(keyspace string, hosts []string, usernam
 		existingHash[dirHash] = dir
 	}
 	return
+}
+
+// queryContext ensures every CQL call has a deadline. If the caller already
+// set one, it is preserved; otherwise the store query timeout is applied.
+func (store *CassandraStore) queryContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if _, ok := ctx.Deadline(); ok {
+		return ctx, func() {}
+	}
+	timeout := store.queryTimeout
+	if timeout <= 0 {
+		timeout = time.Duration(defaultQueryTimeoutMs) * time.Millisecond
+	}
+	return context.WithTimeout(ctx, timeout)
 }
 
 func (store *CassandraStore) BeginTransaction(ctx context.Context) (context.Context, error) {
@@ -106,9 +191,11 @@ func (store *CassandraStore) InsertEntry(ctx context.Context, entry *filer.Entry
 		meta = util.MaybeGzipData(meta)
 	}
 
+	qctx, cancel := store.queryContext(ctx)
+	defer cancel()
 	if err := store.session.Query(
 		"INSERT INTO filemeta (directory,name,meta) VALUES(?,?,?) USING TTL ? ",
-		dir, name, meta, entry.TtlSec).Exec(); err != nil {
+		dir, name, meta, entry.TtlSec).WithContext(qctx).Exec(); err != nil {
 		return fmt.Errorf("insert %s: %s", entry.FullPath, err)
 	}
 
@@ -128,9 +215,11 @@ func (store *CassandraStore) FindEntry(ctx context.Context, fullpath util.FullPa
 	}
 
 	var data []byte
+	qctx, cancel := store.queryContext(ctx)
+	defer cancel()
 	if err := store.session.Query(
 		"SELECT meta FROM filemeta WHERE directory=? AND name=?",
-		dir, name).Scan(&data); err != nil {
+		dir, name).WithContext(qctx).Scan(&data); err != nil {
 		if errors.Is(err, gocql.ErrNotFound) {
 			return nil, filer_pb.ErrNotFound
 		}
@@ -155,9 +244,11 @@ func (store *CassandraStore) DeleteEntry(ctx context.Context, fullpath util.Full
 		dir, name = dirHash+name, ""
 	}
 
+	qctx, cancel := store.queryContext(ctx)
+	defer cancel()
 	if err := store.session.Query(
 		"DELETE FROM filemeta WHERE directory=? AND name=?",
-		dir, name).Exec(); err != nil {
+		dir, name).WithContext(qctx).Exec(); err != nil {
 		return fmt.Errorf("delete %s : %v", fullpath, err)
 	}
 
@@ -169,9 +260,11 @@ func (store *CassandraStore) DeleteFolderChildren(ctx context.Context, fullpath 
 		return nil // filer.ErrUnsupportedSuperLargeDirectoryListing
 	}
 
+	qctx, cancel := store.queryContext(ctx)
+	defer cancel()
 	if err := store.session.Query(
 		"DELETE FROM filemeta WHERE directory=?",
-		fullpath).Exec(); err != nil {
+		fullpath).WithContext(qctx).Exec(); err != nil {
 		return fmt.Errorf("delete %s : %v", fullpath, err)
 	}
 
@@ -195,7 +288,9 @@ func (store *CassandraStore) ListDirectoryEntries(ctx context.Context, dirPath u
 
 	var data []byte
 	var name string
-	iter := store.session.Query(cqlStr, string(dirPath), startFileName, limit+1).Iter()
+	qctx, cancel := store.queryContext(ctx)
+	defer cancel()
+	iter := store.session.Query(cqlStr, string(dirPath), startFileName, limit+1).WithContext(qctx).Iter()
 	for iter.Scan(&name, &data) {
 		entry := &filer.Entry{
 			FullPath: util.NewFullPath(string(dirPath), name),

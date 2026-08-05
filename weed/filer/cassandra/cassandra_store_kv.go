@@ -13,9 +13,11 @@ import (
 func (store *CassandraStore) KvPut(ctx context.Context, key []byte, value []byte) (err error) {
 	dir, name := genDirAndName(key)
 
+	qctx, cancel := store.queryContext(ctx)
+	defer cancel()
 	if err := store.session.Query(
 		"INSERT INTO filemeta (directory,name,meta) VALUES(?,?,?) USING TTL ? ",
-		dir, name, value, 0).Exec(); err != nil {
+		dir, name, value, 0).WithContext(qctx).Exec(); err != nil {
 		return fmt.Errorf("kv insert: %s", err)
 	}
 
@@ -25,9 +27,11 @@ func (store *CassandraStore) KvPut(ctx context.Context, key []byte, value []byte
 func (store *CassandraStore) KvGet(ctx context.Context, key []byte) (data []byte, err error) {
 	dir, name := genDirAndName(key)
 
+	qctx, cancel := store.queryContext(ctx)
+	defer cancel()
 	if err := store.session.Query(
 		"SELECT meta FROM filemeta WHERE directory=? AND name=?",
-		dir, name).Scan(&data); err != nil {
+		dir, name).WithContext(qctx).Scan(&data); err != nil {
 		if errors.Is(err, gocql.ErrNotFound) {
 			return nil, filer.ErrKvNotFound
 		}
@@ -44,9 +48,11 @@ func (store *CassandraStore) KvGet(ctx context.Context, key []byte) (data []byte
 func (store *CassandraStore) KvDelete(ctx context.Context, key []byte) (err error) {
 	dir, name := genDirAndName(key)
 
+	qctx, cancel := store.queryContext(ctx)
+	defer cancel()
 	if err := store.session.Query(
 		"DELETE FROM filemeta WHERE directory=? AND name=?",
-		dir, name).Exec(); err != nil {
+		dir, name).WithContext(qctx).Exec(); err != nil {
 		return fmt.Errorf("kv delete: %w", err)
 	}
 
