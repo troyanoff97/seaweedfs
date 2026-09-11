@@ -28,12 +28,36 @@ import (
 	"github.com/seaweedfs/seaweedfs/weed/topology"
 )
 
+func sameLocationUuids(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	if len(a) == 0 {
+		return true
+	}
+	ac := append([]string(nil), a...)
+	bc := append([]string(nil), b...)
+	sort.Strings(ac)
+	sort.Strings(bc)
+	for i := range ac {
+		if ac[i] != bc[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func (ms *MasterServer) RegisterUuids(heartbeat *master_pb.Heartbeat) (duplicated_uuids []string, err error) {
 	ms.Topo.UuidAccessLock.Lock()
 	defer ms.Topo.UuidAccessLock.Unlock()
 	key := fmt.Sprintf("%s:%d", heartbeat.Ip, heartbeat.Port)
 	if ms.Topo.UuidMap == nil {
 		ms.Topo.UuidMap = make(map[string][]string)
+	}
+	// Periodic CollectHeartbeat always carries LocationUuids. Skip no-op
+	// refreshes so master does not spam "found new uuid" / destabilize grow.
+	if existing, ok := ms.Topo.UuidMap[key]; ok && sameLocationUuids(existing, heartbeat.LocationUuids) {
+		return nil, nil
 	}
 	// find whether new uuid exists
 	for k, v := range ms.Topo.UuidMap {
@@ -53,7 +77,7 @@ func (ms *MasterServer) RegisterUuids(heartbeat *master_pb.Heartbeat) (duplicate
 		return duplicated_uuids, errors.New("volume: Duplicated volume directories were loaded")
 	}
 
-	ms.Topo.UuidMap[key] = heartbeat.LocationUuids
+	ms.Topo.UuidMap[key] = append([]string(nil), heartbeat.LocationUuids...)
 	glog.V(0).Infof("found new uuid:%v %v , %v", key, heartbeat.LocationUuids, ms.Topo.UuidMap)
 	return nil, nil
 }

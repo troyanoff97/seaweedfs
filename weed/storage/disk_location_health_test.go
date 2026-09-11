@@ -52,6 +52,35 @@ func TestDiskLocationHealthLifecycle(t *testing.T) {
 	}
 }
 
+func TestHealthyProbeDoesNotNotifyMaster(t *testing.T) {
+	dir := t.TempDir()
+	loc := newHealthTestLocation(dir)
+	defer loc.Close()
+
+	notifies := 0
+	loc.SetOnDiskHealthChange(func() { notifies++ })
+
+	loc.tryRecoverHealth()
+	loc.tryRecoverHealth()
+	if notifies != 0 {
+		t.Fatalf("healthy probe notified master %d times; want 0", notifies)
+	}
+
+	loc.markUnhealthy(errors.New("input/output error"), "test")
+	if notifies != 1 {
+		t.Fatalf("unhealthy transition notified %d times; want 1", notifies)
+	}
+	loc.markUnhealthy(errors.New("input/output error"), "test")
+	if notifies != 1 {
+		t.Fatalf("repeat unhealthy notified %d times; want 1", notifies)
+	}
+
+	loc.tryRecoverHealth()
+	if notifies != 2 {
+		t.Fatalf("recovery notified %d times; want 2", notifies)
+	}
+}
+
 func TestWritableProbeMarksLocationUnhealthyAndRecovers(t *testing.T) {
 	dir := t.TempDir()
 	loc := newHealthTestLocation(dir)

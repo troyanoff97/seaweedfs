@@ -737,6 +737,8 @@ func (l *DiskLocation) CheckDiskSpace(config stats.DiskIOProbeConfig) {
 		isLow, desc := l.MinFreeSpace.IsLow(s.Free, s.PercentFree)
 		if isLow != l.isDiskSpaceLow.Load() {
 			l.isDiskSpaceLow.Store(isLow)
+			// Writable capacity flipped — master must refresh layout/slots.
+			l.notifyDiskHealthChange()
 		}
 
 		logLevel := glog.Level(4)

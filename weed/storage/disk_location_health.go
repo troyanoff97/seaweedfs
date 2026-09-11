@@ -60,9 +60,11 @@ func (l *DiskLocation) markUnhealthy(err error, source string) {
 		volumeIds := l.volumeIds()
 		glog.Errorf("disk location %s marked unhealthy (%s): %v; new writes disabled on this directory; existing volumes marked readonly: %s",
 			l.Directory, source, err, formatVolumeIds(volumeIds))
+		l.publishDiskHealthMetrics()
+		l.notifyDiskHealthChange()
+		return
 	}
 	l.publishDiskHealthMetrics()
-	l.notifyDiskHealthChange()
 }
 
 func (l *DiskLocation) tryRecoverHealth() {
@@ -86,9 +88,11 @@ func (l *DiskLocation) tryRecoverHealth() {
 		volumeIds := l.volumeIds()
 		glog.Infof("disk location %s recovered and is healthy again; volumes restored to writable: %s",
 			l.Directory, formatVolumeIds(volumeIds))
+		l.publishDiskHealthMetrics()
+		l.notifyDiskHealthChange()
+		return
 	}
 	l.publishDiskHealthMetrics()
-	l.notifyDiskHealthChange()
 }
 
 func (l *DiskLocation) checkHealthAndDiskSpace() {

@@ -54,3 +54,24 @@ func TestRegisterUuidsRejectsDuplicateOnAnotherVolumeServer(t *testing.T) {
 		t.Fatalf("duplicates=%v err=%v", duplicates, err)
 	}
 }
+
+func TestRegisterUuidsNoOpWhenUnchanged(t *testing.T) {
+	ms := &MasterServer{Topo: &topology.Topology{}}
+	hb := &master_pb.Heartbeat{
+		Ip: "10.0.0.1", Port: 8088, LocationUuids: []string{"disk-b", "disk-a"},
+	}
+	if _, err := ms.RegisterUuids(hb); err != nil {
+		t.Fatal(err)
+	}
+	// Same set, different order — must be a no-op (periodic CollectHeartbeat).
+	again := &master_pb.Heartbeat{
+		Ip: "10.0.0.1", Port: 8088, LocationUuids: []string{"disk-a", "disk-b"},
+	}
+	if _, err := ms.RegisterUuids(again); err != nil {
+		t.Fatal(err)
+	}
+	got := ms.Topo.UuidMap["10.0.0.1:8088"]
+	if len(got) != 2 || got[0] != "disk-b" || got[1] != "disk-a" {
+		t.Fatalf("uuids=%v want original order preserved on no-op", got)
+	}
+}
