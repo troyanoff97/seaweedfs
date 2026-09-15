@@ -65,6 +65,7 @@ type S3Options struct {
 	idleTimeout               *int
 	concurrentUploadLimitMB   *int
 	concurrentFileUploadLimit *int
+	maxConnections            *int
 	enableIam                 *bool
 	iamReadOnly               *bool
 	debug                     *bool
@@ -107,6 +108,7 @@ func init() {
 	s3StandaloneOptions.idleTimeout = cmdS3.Flag.Int("idleTimeout", 120, "connection idle seconds")
 	s3StandaloneOptions.concurrentUploadLimitMB = cmdS3.Flag.Int("concurrentUploadLimitMB", 0, "limit total concurrent upload size, 0 means unlimited")
 	s3StandaloneOptions.concurrentFileUploadLimit = cmdS3.Flag.Int("concurrentFileUploadLimit", 0, "limit number of concurrent file uploads, 0 means unlimited")
+	s3StandaloneOptions.maxConnections = cmdS3.Flag.Int("maxConnections", 0, "max accepted TCP connections for S3 HTTP; 0=auto when any concurrent upload limit>0 (fileLimit*32 or 1024, min 1024), -1=unlimited")
 	s3StandaloneOptions.enableIam = cmdS3.Flag.Bool("iam", true, "enable embedded IAM API on the same port")
 	s3StandaloneOptions.iamReadOnly = cmdS3.Flag.Bool("iam.readOnly", true, "disable IAM write operations on this server")
 	s3StandaloneOptions.debug = cmdS3.Flag.Bool("debug", false, "serves runtime profiling data via pprof on the port specified by -debug.port")
@@ -383,6 +385,8 @@ func (s3opt *S3Options) startS3Server() bool {
 			if err != nil {
 				glog.Fatalf("Failed to listen on %s: %v", localSocket, err)
 			}
+			limited := s3opt.limitS3Listeners(s3SocketListener)
+			s3SocketListener = limited[0]
 			if err := newHttpServer(router, nil).Serve(s3SocketListener); err != nil && err != http.ErrServerClosed {
 				glog.Fatalf("Failed to start S3 http server: %v", err)
 			}
@@ -394,6 +398,10 @@ func (s3opt *S3Options) startS3Server() bool {
 		*s3opt.bindIp, *s3opt.port, time.Duration(*s3opt.idleTimeout)*time.Second)
 	if err != nil {
 		glog.Fatalf("S3 API Server listener on %s error: %v", listenAddress, err)
+	}
+	{
+		limited := s3opt.limitS3Listeners(s3ApiListener, s3ApiLocalListener)
+		s3ApiListener, s3ApiLocalListener = limited[0], limited[1]
 	}
 
 	if len(*s3opt.auditLogConfig) > 0 {
@@ -481,6 +489,10 @@ func (s3opt *S3Options) startS3Server() bool {
 				*s3opt.bindIp, *s3opt.portHttps, time.Duration(*s3opt.idleTimeout)*time.Second)
 			if err != nil {
 				glog.Fatalf("S3 API HTTPS listener on %s:%d error: %v", *s3opt.bindIp, *s3opt.portHttps, err)
+			}
+			{
+				limited := s3opt.limitS3Listeners(s3ApiListenerHttps, s3ApiLocalListenerHttps)
+				s3ApiListenerHttps, s3ApiLocalListenerHttps = limited[0], limited[1]
 			}
 			if s3ApiLocalListenerHttps != nil {
 				go func() {
@@ -602,4 +614,54 @@ func (s3opt *S3Options) deriveS3AdvertisedEndpoint() string {
 		}
 	}
 	return fmt.Sprintf("%s://%s", scheme, util.JoinHostPort(host, port))
+}
+
+// limitS3Listeners caps accepted TCP connections so overload cannot balloon FD
+// count while upload handlers reject with 503. maxConnections semantics:
+//
+//	0  → auto when any concurrent upload limit >0 (fileLimit*32 or 1024, min 1024)
+//	-1 → unlimited
+//	>0 → exact cap
+//
+// Primary and local listeners share one budget (not 2x).
+func (s3opt *S3Options) limitS3Listeners(listeners ...net.Listener) []net.Listener {
+	maxConn := s3opt.resolveMaxConnections()
+	if maxConn <= 0 {
+		return listeners
+	}
+	glog.V(0).Infof("S3 limiting concurrent TCP connections to %d (shared across listeners)", maxConn)
+	return util.LimitListenersShareBudget(maxConn, listeners...)
+}
+
+func (s3opt *S3Options) resolveMaxConnections() int {
+	maxConn := 0
+	if s3opt.maxConnections != nil {
+		maxConn = *s3opt.maxConnections
+	}
+	if maxConn < 0 {
+		return -1
+	}
+	if maxConn > 0 {
+		return maxConn
+	}
+	fileLimit := 0
+	if s3opt.concurrentFileUploadLimit != nil {
+		fileLimit = *s3opt.concurrentFileUploadLimit
+	}
+	byteLimit := int64(0)
+	if s3opt.concurrentUploadLimitMB != nil {
+		byteLimit = int64(*s3opt.concurrentUploadLimitMB)
+	}
+	if fileLimit <= 0 && byteLimit <= 0 {
+		return 0
+	}
+	if fileLimit > 0 {
+		maxConn = fileLimit * 32
+	} else {
+		maxConn = 1024
+	}
+	if maxConn < 1024 {
+		maxConn = 1024
+	}
+	return maxConn
 }

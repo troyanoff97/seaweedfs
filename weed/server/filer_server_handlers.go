@@ -3,6 +3,7 @@ package weed_server
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"path"
 	"strconv"
@@ -91,40 +92,51 @@ func (fs *FilerServer) filerHandler(w http.ResponseWriter, r *http.Request) {
 			fs.DeleteHandler(w, r)
 		}
 	case http.MethodPost, http.MethodPut:
-		// wait until in flight data is less than the limit
+		// Fail fast when concurrent upload limits are exceeded. Blocking on
+		// Wait() previously kept accepted TCP connections open and drove FD/RSS
+		// into cgroup OOM under sustained S3/filer write load.
 		contentLength := getContentLength(r)
+		admissionBytes := contentLength
+		if r.ContentLength < 0 {
+			// Chunked / unknown length: conservative estimate so byte limits
+			// are not bypassed (matches default filer autochunk size scale).
+			admissionBytes = int64(fs.option.MaxMB) * 1024 * 1024
+			if admissionBytes <= 0 {
+				admissionBytes = 4 * 1024 * 1024
+			}
+		}
 		fs.inFlightDataLimitCond.L.Lock()
 		inFlightDataSize := atomic.LoadInt64(&fs.inFlightDataSize)
 		inFlightUploads := atomic.LoadInt64(&fs.inFlightUploads)
-
-		// Wait if either data size limit or file count limit is exceeded
-		for (fs.option.ConcurrentUploadLimit != 0 && inFlightDataSize > fs.option.ConcurrentUploadLimit) || (fs.option.ConcurrentFileUploadLimit != 0 && inFlightUploads >= fs.option.ConcurrentFileUploadLimit) {
-			if fs.option.ConcurrentUploadLimit != 0 && inFlightDataSize > fs.option.ConcurrentUploadLimit {
-				glog.V(4).Infof("wait because inflight data %d > %d", inFlightDataSize, fs.option.ConcurrentUploadLimit)
+		overBytes := fs.option.ConcurrentUploadLimit != 0 && inFlightDataSize+admissionBytes > fs.option.ConcurrentUploadLimit
+		overFiles := fs.option.ConcurrentFileUploadLimit != 0 && inFlightUploads >= fs.option.ConcurrentFileUploadLimit
+		if overBytes || overFiles {
+			fs.inFlightDataLimitCond.L.Unlock()
+			glog.V(1).Infof("reject filer upload: inflight uploads=%d/%d bytes=%d/%d admissionBytes=%d",
+				inFlightUploads, fs.option.ConcurrentFileUploadLimit,
+				inFlightDataSize, fs.option.ConcurrentUploadLimit, admissionBytes)
+			w.Header().Set("Connection", "close")
+			if rc := http.NewResponseController(w); rc != nil {
+				_ = rc.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
 			}
-			if fs.option.ConcurrentFileUploadLimit != 0 && inFlightUploads >= fs.option.ConcurrentFileUploadLimit {
-				glog.V(4).Infof("wait because inflight uploads %d >= %d", inFlightUploads, fs.option.ConcurrentFileUploadLimit)
+			if r.Body != nil {
+				_, _ = io.CopyN(io.Discard, r.Body, 1<<20)
+				_ = r.Body.Close()
 			}
-			fs.inFlightDataLimitCond.Wait()
-			inFlightDataSize = atomic.LoadInt64(&fs.inFlightDataSize)
-			inFlightUploads = atomic.LoadInt64(&fs.inFlightUploads)
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
 		}
+		newUploads := atomic.AddInt64(&fs.inFlightUploads, 1)
+		newSize := atomic.AddInt64(&fs.inFlightDataSize, admissionBytes)
 		fs.inFlightDataLimitCond.L.Unlock()
 
-		// Increment counters
-		newUploads := atomic.AddInt64(&fs.inFlightUploads, 1)
-		newSize := atomic.AddInt64(&fs.inFlightDataSize, contentLength)
-		// Update metrics
 		stats.FilerInFlightUploadCountGauge.Set(float64(newUploads))
 		stats.FilerInFlightUploadBytesGauge.Set(float64(newSize))
 		defer func() {
-			// Decrement counters
 			newUploads := atomic.AddInt64(&fs.inFlightUploads, -1)
-			newSize := atomic.AddInt64(&fs.inFlightDataSize, -contentLength)
-			// Update metrics
+			newSize := atomic.AddInt64(&fs.inFlightDataSize, -admissionBytes)
 			stats.FilerInFlightUploadCountGauge.Set(float64(newUploads))
 			stats.FilerInFlightUploadBytesGauge.Set(float64(newSize))
-			fs.inFlightDataLimitCond.Signal()
 		}()
 
 		if r.Method == http.MethodPut {

@@ -508,6 +508,7 @@ func initMiniS3Flags() {
 	miniS3Options.idleTimeout = cmdMini.Flag.Int("s3.idleTimeout", 120, "connection idle seconds")
 	miniS3Options.concurrentUploadLimitMB = cmdMini.Flag.Int("s3.concurrentUploadLimitMB", 0, "limit total concurrent upload size")
 	miniS3Options.concurrentFileUploadLimit = cmdMini.Flag.Int("s3.concurrentFileUploadLimit", 0, "limit number of concurrent file uploads")
+	miniS3Options.maxConnections = cmdMini.Flag.Int("s3.maxConnections", 0, "max accepted TCP connections for S3 HTTP; 0=auto when any concurrent upload limit>0")
 	miniS3Options.enableIam = cmdMini.Flag.Bool("s3.iam", true, "enable embedded IAM API on the same port")
 	miniS3Options.iamReadOnly = miniS3IamReadOnly
 	miniS3Options.dataCenter = cmdMini.Flag.String("s3.dataCenter", "", "prefer to read and write to volumes in this data center")

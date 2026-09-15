@@ -21,12 +21,24 @@ import (
 	"github.com/seaweedfs/seaweedfs/weed/security"
 	"github.com/seaweedfs/seaweedfs/weed/stats"
 	"github.com/seaweedfs/seaweedfs/weed/util"
+	"github.com/seaweedfs/seaweedfs/weed/util/buffer_pool"
 )
 
 var bufPool = sync.Pool{
 	New: func() interface{} {
 		return new(bytes.Buffer)
 	},
+}
+
+func putBufPool(buf *bytes.Buffer) {
+	if buf == nil {
+		return
+	}
+	if buf.Cap() > buffer_pool.MaxRetainedBufferCap {
+		return
+	}
+	buf.Reset()
+	bufPool.Put(buf)
 }
 
 func (fs *FilerServer) uploadRequestToChunks(ctx context.Context, w http.ResponseWriter, r *http.Request, reader io.Reader, chunkSize int32, fileName, contentType string, contentLength int64, so *operation.StorageOption) (fileChunks []*filer_pb.FileChunk, md5Hash hash.Hash, chunkOffset int64, uploadErr error, smallContent []byte) {
@@ -86,7 +98,7 @@ func (fs *FilerServer) uploadReaderToChunks(ctx context.Context, r *http.Request
 
 		// data, err := io.ReadAll(limitedReader)
 		if err != nil || dataSize == 0 {
-			bufPool.Put(bytesBuffer)
+			putBufPool(bytesBuffer)
 			<-bytesBufferLimitChan
 			if err != nil {
 				uploadErrLock.Lock()
@@ -102,7 +114,7 @@ func (fs *FilerServer) uploadReaderToChunks(ctx context.Context, r *http.Request
 				chunkOffset += dataSize
 				smallContent = make([]byte, dataSize)
 				bytesBuffer.Read(smallContent)
-				bufPool.Put(bytesBuffer)
+				putBufPool(bytesBuffer)
 				<-bytesBufferLimitChan
 				stats.FilerHandlerCounter.WithLabelValues(stats.ContentSaveToFiler).Inc()
 				break
@@ -114,7 +126,7 @@ func (fs *FilerServer) uploadReaderToChunks(ctx context.Context, r *http.Request
 		wg.Add(1)
 		go func(offset int64, buf *bytes.Buffer) {
 			defer func() {
-				bufPool.Put(buf)
+				putBufPool(buf)
 				<-bytesBufferLimitChan
 				wg.Done()
 			}()

@@ -99,7 +99,7 @@ func (fs *FilerServer) doPostAutoChunk(ctx context.Context, w http.ResponseWrite
 		buf.Reset()
 		buf.ReadFrom(part1)
 		filerResult, replyerr = fs.saveMetaData(ctx, r, fileName, contentType, so, nil, nil, 0, buf.Bytes())
-		bufPool.Put(buf)
+		putBufPool(buf)
 		return
 	}
 

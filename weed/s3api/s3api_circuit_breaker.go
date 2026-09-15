@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/gorilla/mux"
 	"github.com/seaweedfs/seaweedfs/weed/filer"
@@ -100,51 +102,60 @@ func (cb *CircuitBreaker) loadCircuitBreakerConfig(cfg *s3_pb.S3CircuitBreakerCo
 }
 
 func (cb *CircuitBreaker) Limit(f func(w http.ResponseWriter, r *http.Request), action string) (http.HandlerFunc, Action) {
+	return cb.limitHandler(f, action, false)
+}
+
+// LimitBodyUpload is like Limit but also enforces ConcurrentUploadLimit /
+// ConcurrentFileUploadLimit. Use only for handlers that accept a client body
+// destined for volume storage (PutObject, PutObjectPart, PostPolicy). Metadata
+// writes (Delete, Abort, Complete MPU, Copy, …) must use Limit so they are not
+// starved by upload backpressure.
+func (cb *CircuitBreaker) LimitBodyUpload(f func(w http.ResponseWriter, r *http.Request), action string) (http.HandlerFunc, Action) {
+	return cb.limitHandler(f, action, true)
+}
+
+// unknownUploadByteEstimate is used when Content-Length is absent/chunked so
+// ConcurrentUploadLimit (bytes) cannot be bypassed by undercounting as 0.
+// Matches the hardcoded S3 chunk size in putToFiler.
+const unknownUploadByteEstimate int64 = 8 * 1024 * 1024
+
+func (cb *CircuitBreaker) limitHandler(f func(w http.ResponseWriter, r *http.Request), action string, applyUploadCap bool) (http.HandlerFunc, Action) {
 	inner := func(w http.ResponseWriter, r *http.Request) {
-		// Apply upload limiting for write actions if configured
-		if cb.s3a != nil && (action == s3_constants.ACTION_WRITE) &&
+		// Fail fast with 503 instead of blocking on Wait(): blocking holds the
+		// accepted TCP connection (and its buffers) until a slot frees, which
+		// under sustained load balloons FD count and RSS into memcg OOM.
+		if applyUploadCap && cb.s3a != nil &&
 			(cb.s3a.option.ConcurrentUploadLimit != 0 || cb.s3a.option.ConcurrentFileUploadLimit != 0) {
 
-			// Get content length, default to 0 if not provided
 			contentLength := r.ContentLength
 			if contentLength < 0 {
-				contentLength = 0
+				contentLength = unknownUploadByteEstimate
 			}
 
-			// Wait until in flight data is less than the limit
 			cb.s3a.inFlightDataLimitCond.L.Lock()
 			inFlightDataSize := atomic.LoadInt64(&cb.s3a.inFlightDataSize)
 			inFlightUploads := atomic.LoadInt64(&cb.s3a.inFlightUploads)
-
-			// Wait if either data size limit or file count limit is exceeded
-			for (cb.s3a.option.ConcurrentUploadLimit != 0 && inFlightDataSize > cb.s3a.option.ConcurrentUploadLimit) ||
-				(cb.s3a.option.ConcurrentFileUploadLimit != 0 && inFlightUploads >= cb.s3a.option.ConcurrentFileUploadLimit) {
-				if cb.s3a.option.ConcurrentUploadLimit != 0 && inFlightDataSize > cb.s3a.option.ConcurrentUploadLimit {
-					glog.V(4).Infof("wait because inflight data %d > %d", inFlightDataSize, cb.s3a.option.ConcurrentUploadLimit)
-				}
-				if cb.s3a.option.ConcurrentFileUploadLimit != 0 && inFlightUploads >= cb.s3a.option.ConcurrentFileUploadLimit {
-					glog.V(4).Infof("wait because inflight uploads %d >= %d", inFlightUploads, cb.s3a.option.ConcurrentFileUploadLimit)
-				}
-				cb.s3a.inFlightDataLimitCond.Wait()
-				inFlightDataSize = atomic.LoadInt64(&cb.s3a.inFlightDataSize)
-				inFlightUploads = atomic.LoadInt64(&cb.s3a.inFlightUploads)
+			overBytes := cb.s3a.option.ConcurrentUploadLimit != 0 && inFlightDataSize+contentLength > cb.s3a.option.ConcurrentUploadLimit
+			overFiles := cb.s3a.option.ConcurrentFileUploadLimit != 0 && inFlightUploads >= cb.s3a.option.ConcurrentFileUploadLimit
+			if overBytes || overFiles {
+				cb.s3a.inFlightDataLimitCond.L.Unlock()
+				glog.V(1).Infof("reject S3 upload: inflight uploads=%d/%d bytes=%d/%d contentLength=%d",
+					inFlightUploads, cb.s3a.option.ConcurrentFileUploadLimit,
+					inFlightDataSize, cb.s3a.option.ConcurrentUploadLimit, contentLength)
+				rejectBusyUpload(w, r, s3err.ErrTooManyRequest)
+				return
 			}
-			cb.s3a.inFlightDataLimitCond.L.Unlock()
-
-			// Increment counters
 			newUploads := atomic.AddInt64(&cb.s3a.inFlightUploads, 1)
 			newSize := atomic.AddInt64(&cb.s3a.inFlightDataSize, contentLength)
-			// Update metrics
+			cb.s3a.inFlightDataLimitCond.L.Unlock()
+
 			stats.S3InFlightUploadCountGauge.Set(float64(newUploads))
 			stats.S3InFlightUploadBytesGauge.Set(float64(newSize))
 			defer func() {
-				// Decrement counters
 				newUploads := atomic.AddInt64(&cb.s3a.inFlightUploads, -1)
 				newSize := atomic.AddInt64(&cb.s3a.inFlightDataSize, -contentLength)
-				// Update metrics
 				stats.S3InFlightUploadCountGauge.Set(float64(newUploads))
 				stats.S3InFlightUploadBytesGauge.Set(float64(newSize))
-				cb.s3a.inFlightDataLimitCond.Signal()
 			}()
 		}
 
@@ -184,6 +195,20 @@ func (cb *CircuitBreaker) Limit(f func(w http.ResponseWriter, r *http.Request), 
 		}
 		inner(w, r)
 	}, Action(action)
+}
+
+// rejectBusyUpload closes the connection promptly so unread request bodies do
+// not pin FDs after a 503 backpressure response.
+func rejectBusyUpload(w http.ResponseWriter, r *http.Request, code s3err.ErrorCode) {
+	w.Header().Set("Connection", "close")
+	if rc := http.NewResponseController(w); rc != nil {
+		_ = rc.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+	}
+	if r.Body != nil {
+		_, _ = io.CopyN(io.Discard, r.Body, 1<<20)
+		_ = r.Body.Close()
+	}
+	s3err.WriteErrorResponse(w, r, code)
 }
 
 func (cb *CircuitBreaker) limit(r *http.Request, bucket string, action string) (rollback []func(), errCode s3err.ErrorCode) {

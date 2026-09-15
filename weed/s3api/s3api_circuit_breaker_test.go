@@ -6,6 +6,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/seaweedfs/seaweedfs/weed/pb/s3_pb"
 	"github.com/seaweedfs/seaweedfs/weed/s3api/s3_constants"
@@ -106,6 +107,151 @@ func doLimit(circuitBreaker *CircuitBreaker, routineCount int, r *http.Request, 
 		}
 	}
 	return successCounter
+}
+
+func TestConcurrentUploadLimitRejectsWhenBusy(t *testing.T) {
+	s3a := &S3ApiServer{
+		option: &S3ApiServerOption{
+			ConcurrentFileUploadLimit: 1,
+			ConcurrentUploadLimit:     0,
+		},
+		inFlightDataLimitCond: sync.NewCond(&sync.Mutex{}),
+	}
+	atomic.StoreInt64(&s3a.inFlightUploads, 1) // already at limit
+
+	cb := &CircuitBreaker{
+		counters:    make(map[string]*int64),
+		limitations: make(map[string]int64),
+		s3a:         s3a,
+	}
+
+	handlerRan := false
+	h, _ := cb.LimitBodyUpload(func(w http.ResponseWriter, r *http.Request) {
+		handlerRan = true
+	}, s3_constants.ACTION_WRITE)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/bucket/object", nil)
+	req.ContentLength = 100
+	done := make(chan struct{})
+	go func() {
+		h(rec, req)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("upload limit must fail fast, not block on Wait()")
+	}
+
+	if handlerRan {
+		t.Fatal("handler must not run when concurrent upload limit is exceeded")
+	}
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d", rec.Code)
+	}
+	if rec.Header().Get("Connection") != "close" {
+		t.Fatalf("expected Connection: close on reject, got %q", rec.Header().Get("Connection"))
+	}
+	if got := atomic.LoadInt64(&s3a.inFlightUploads); got != 1 {
+		t.Fatalf("inflight uploads should stay at 1, got %d", got)
+	}
+}
+
+func TestConcurrentUploadLimitAllowsWhenUnderCap(t *testing.T) {
+	s3a := &S3ApiServer{
+		option: &S3ApiServerOption{
+			ConcurrentFileUploadLimit: 2,
+		},
+		inFlightDataLimitCond: sync.NewCond(&sync.Mutex{}),
+	}
+	cb := &CircuitBreaker{
+		counters:    make(map[string]*int64),
+		limitations: make(map[string]int64),
+		s3a:         s3a,
+	}
+
+	handlerRan := false
+	h, _ := cb.LimitBodyUpload(func(w http.ResponseWriter, r *http.Request) {
+		handlerRan = true
+		if got := atomic.LoadInt64(&s3a.inFlightUploads); got != 1 {
+			t.Errorf("expected 1 inflight upload during handler, got %d", got)
+		}
+	}, s3_constants.ACTION_WRITE)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/bucket/object", nil)
+	req.ContentLength = 10
+	h(rec, req)
+
+	if !handlerRan {
+		t.Fatal("handler should run under the concurrent upload limit")
+	}
+	if got := atomic.LoadInt64(&s3a.inFlightUploads); got != 0 {
+		t.Fatalf("inflight uploads should return to 0, got %d", got)
+	}
+}
+
+func TestLimitWithoutBodyUploadIgnoresUploadCap(t *testing.T) {
+	s3a := &S3ApiServer{
+		option: &S3ApiServerOption{
+			ConcurrentFileUploadLimit: 1,
+		},
+		inFlightDataLimitCond: sync.NewCond(&sync.Mutex{}),
+	}
+	atomic.StoreInt64(&s3a.inFlightUploads, 1)
+	cb := &CircuitBreaker{
+		counters:    make(map[string]*int64),
+		limitations: make(map[string]int64),
+		s3a:         s3a,
+	}
+
+	handlerRan := false
+	h, _ := cb.Limit(func(w http.ResponseWriter, r *http.Request) {
+		handlerRan = true
+	}, s3_constants.ACTION_WRITE)
+
+	rec := httptest.NewRecorder()
+	h(rec, httptest.NewRequest(http.MethodDelete, "/bucket/object", nil))
+	if !handlerRan {
+		t.Fatal("Delete via Limit must not be blocked by concurrent upload cap")
+	}
+	if got := atomic.LoadInt64(&s3a.inFlightUploads); got != 1 {
+		t.Fatalf("Delete must not change inflight uploads, got %d", got)
+	}
+}
+
+func TestConcurrentUploadLimitUnknownContentLengthUsesEstimate(t *testing.T) {
+	s3a := &S3ApiServer{
+		option: &S3ApiServerOption{
+			ConcurrentUploadLimit:     unknownUploadByteEstimate,
+			ConcurrentFileUploadLimit: 0,
+		},
+		inFlightDataLimitCond: sync.NewCond(&sync.Mutex{}),
+	}
+	atomic.StoreInt64(&s3a.inFlightDataSize, 1) // already near/over with estimate
+	cb := &CircuitBreaker{
+		counters:    make(map[string]*int64),
+		limitations: make(map[string]int64),
+		s3a:         s3a,
+	}
+
+	handlerRan := false
+	h, _ := cb.LimitBodyUpload(func(w http.ResponseWriter, r *http.Request) {
+		handlerRan = true
+	}, s3_constants.ACTION_WRITE)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/bucket/object", nil)
+	req.ContentLength = -1
+	h(rec, req)
+	if handlerRan {
+		t.Fatal("chunked body should use estimate and reject when bytes would exceed limit")
+	}
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d", rec.Code)
+	}
 }
 
 // TestLimitInterceptor verifies the optional request interceptor: it is a no-op

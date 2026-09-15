@@ -16,7 +16,7 @@ import (
 // reported in the issue.
 //
 // We verify a Put + Get round trip can never round-trip a buffer larger than
-// maxRetainedBufferCap, regardless of how big it grew while in use.
+// MaxRetainedBufferCap, regardless of how big it grew while in use.
 func TestSyncPoolPutBuffer_DropsOversized(t *testing.T) {
 	// Drain the pool so we start from a deterministic point. sync.Pool may
 	// still hold cached entries on other Ps, but for the small/big-cap
@@ -27,10 +27,10 @@ func TestSyncPoolPutBuffer_DropsOversized(t *testing.T) {
 	}
 
 	big := &bytes.Buffer{}
-	big.Grow(maxRetainedBufferCap * 4) // simulate a large upload buffer
-	if got := big.Cap(); got <= maxRetainedBufferCap {
+	big.Grow(MaxRetainedBufferCap * 4) // simulate a large upload buffer
+	if got := big.Cap(); got <= MaxRetainedBufferCap {
 		t.Fatalf("test setup: big.Cap=%d should exceed threshold %d",
-			got, maxRetainedBufferCap)
+			got, MaxRetainedBufferCap)
 	}
 	SyncPoolPutBuffer(big)
 
@@ -39,10 +39,10 @@ func TestSyncPoolPutBuffer_DropsOversized(t *testing.T) {
 	// on the very next Get on this goroutine.)
 	for i := 0; i < 16; i++ {
 		got := SyncPoolGetBuffer()
-		if cap := got.Cap(); cap > maxRetainedBufferCap {
+		if cap := got.Cap(); cap > MaxRetainedBufferCap {
 			t.Fatalf("Get %d returned buffer with cap=%d, exceeds threshold %d "+
 				"(regression: oversized buffers retained in pool?)",
-				i, cap, maxRetainedBufferCap)
+				i, cap, MaxRetainedBufferCap)
 		}
 	}
 }
@@ -56,7 +56,7 @@ func TestSyncPoolPutBuffer_KeepsRightSized(t *testing.T) {
 	}
 
 	small := &bytes.Buffer{}
-	small.Grow(maxRetainedBufferCap / 2)
+	small.Grow(MaxRetainedBufferCap / 2)
 	smallCap := small.Cap()
 	SyncPoolPutBuffer(small)
 

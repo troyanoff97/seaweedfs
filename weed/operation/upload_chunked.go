@@ -16,6 +16,7 @@ import (
 	"github.com/seaweedfs/seaweedfs/weed/glog"
 	"github.com/seaweedfs/seaweedfs/weed/pb/filer_pb"
 	"github.com/seaweedfs/seaweedfs/weed/security"
+	"github.com/seaweedfs/seaweedfs/weed/util/buffer_pool"
 	util_http "github.com/seaweedfs/seaweedfs/weed/util/http"
 )
 
@@ -51,6 +52,17 @@ var chunkBufferPool = sync.Pool{
 	New: func() interface{} {
 		return new(bytes.Buffer)
 	},
+}
+
+func putChunkBuffer(buf *bytes.Buffer) {
+	if buf == nil {
+		return
+	}
+	if buf.Cap() > buffer_pool.MaxRetainedBufferCap {
+		return
+	}
+	buf.Reset()
+	chunkBufferPool.Put(buf)
 }
 
 // UploadReaderInChunks reads from reader and uploads in chunks to volume servers
@@ -114,7 +126,7 @@ uploadLoop:
 				wrapped = fmt.Errorf("%w: %w", ErrTruncatedBody, wrapped)
 			}
 			glog.V(2).Infof("UploadReaderInChunks: %v", wrapped)
-			chunkBufferPool.Put(bytesBuffer)
+			putChunkBuffer(bytesBuffer)
 			<-bytesBufferLimitChan
 			uploadErrLock.Lock()
 			if uploadErr == nil {
@@ -131,7 +143,7 @@ uploadLoop:
 				// Keep this at verbose level to avoid warning noise in normal operation.
 				glog.V(4).Infof("UploadReaderInChunks: received 0 bytes on first read - creating empty file")
 			}
-			chunkBufferPool.Put(bytesBuffer)
+			putChunkBuffer(bytesBuffer)
 			<-bytesBufferLimitChan
 			// If we've already read some chunks, this is normal EOF
 			// If we haven't read anything yet (chunkOffset == 0), this could be an empty file
@@ -143,7 +155,7 @@ uploadLoop:
 		if chunkOffset == 0 && opt.SaveSmallInline && dataSize < opt.SmallFileLimit {
 			smallContent := make([]byte, dataSize)
 			n, readErr := io.ReadFull(bytesBuffer, smallContent)
-			chunkBufferPool.Put(bytesBuffer)
+			putChunkBuffer(bytesBuffer)
 			<-bytesBufferLimitChan
 
 			if readErr != nil {
@@ -162,7 +174,7 @@ uploadLoop:
 		wg.Add(1)
 		go func(offset int64, buf *bytes.Buffer, size int64) {
 			defer func() {
-				chunkBufferPool.Put(buf)
+				putChunkBuffer(buf)
 				<-bytesBufferLimitChan
 				wg.Done()
 			}()
