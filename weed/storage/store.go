@@ -70,8 +70,9 @@ type Store struct {
 	Id                   string // volume server id, independent of ip:port for stable identification
 	Locations            []*DiskLocation
 	locationsMu          sync.RWMutex
-	dataCenter           string // optional information, overwriting master setting if exists
-	rack                 string // optional information, overwriting master setting if exists
+	volumeCreateMu       sync.Mutex // serializes disk pick + create so concurrent grows do not stack on one dir
+	dataCenter           string     // optional information, overwriting master setting if exists
+	rack                 string     // optional information, overwriting master setting if exists
 	connected            bool
 	NeedleMapKind        NeedleMapKind
 	State                *State
@@ -313,46 +314,74 @@ func (s *Store) addVolume(vid needle.VolumeId, collection string, needleMapKind 
 		return fmt.Errorf("Volume Id %d already exists!", vid)
 	}
 
-	// Find location with lowest local volume count (load balancing)
-	var location *DiskLocation
-	var diskId uint32
-	var minVolCount int
-	for i, loc := range s.LocationsSnapshot() {
-		if loc.DiskType == diskType && s.hasFreeDiskLocation(loc) {
-			volCount := loc.LocalVolumesLen()
-			if location == nil || volCount < minVolCount {
-				location = loc
-				diskId = uint32(i)
-				minVolCount = volCount
-			}
+	// Serialize pick+create so concurrent AllocateVolume RPCs cannot all choose the
+	// same empty dir before LocalVolumesLen updates (customer saw 2–3 writables/disk).
+	s.volumeCreateMu.Lock()
+	defer s.volumeCreateMu.Unlock()
+
+	if s.findVolume(vid) != nil {
+		return fmt.Errorf("Volume Id %d already exists!", vid)
+	}
+
+	location, diskId := s.pickDiskLocationForNewVolume(diskType)
+	if location == nil {
+		return fmt.Errorf("No more free space left")
+	}
+
+	glog.V(0).Infof("In dir %s (disk ID %d) adds volume:%v collection:%s replicaPlacement:%v ttl:%v",
+		location.Directory, diskId, vid, collection, replicaPlacement, ttl)
+	if volume, err := NewVolume(location.Directory, location.IdxDirectory, collection, vid, needleMapKind, replicaPlacement, ttl, preallocate, ver, memoryMapMaxSizeMb, ldbTimeout); err == nil {
+		volume.diskId = diskId // Set the disk ID
+		location.SetVolume(vid, volume)
+		glog.V(0).Infof("add volume %d on disk ID %d", vid, diskId)
+		s.NewVolumesChan <- &master_pb.VolumeShortInformationMessage{
+			Id:               uint32(vid),
+			Collection:       collection,
+			ReplicaPlacement: uint32(replicaPlacement.Byte()),
+			Version:          uint32(volume.Version()),
+			Ttl:              ttl.ToUint32(),
+			DiskType:         string(diskType),
+			DiskId:           diskId,
+		}
+		return nil
+	} else {
+		if IsDiskError(err) {
+			location.ReportDiskError(err)
+		}
+		return err
+	}
+}
+
+// pickDiskLocationForNewVolume prefers dirs with zero local volumes so a grow
+// batch fills empty disks before stacking a second volume on any disk. When no
+// empty free dir remains, falls back to least LocalVolumesLen (load balance).
+func (s *Store) pickDiskLocationForNewVolume(diskType DiskType) (*DiskLocation, uint32) {
+	locations := s.LocationsSnapshot()
+
+	for i, loc := range locations {
+		if loc.DiskType != diskType || !s.hasFreeDiskLocation(loc) {
+			continue
+		}
+		if loc.LocalVolumesLen() == 0 {
+			return loc, uint32(i)
 		}
 	}
 
-	if location != nil {
-		glog.V(0).Infof("In dir %s (disk ID %d) adds volume:%v collection:%s replicaPlacement:%v ttl:%v",
-			location.Directory, diskId, vid, collection, replicaPlacement, ttl)
-		if volume, err := NewVolume(location.Directory, location.IdxDirectory, collection, vid, needleMapKind, replicaPlacement, ttl, preallocate, ver, memoryMapMaxSizeMb, ldbTimeout); err == nil {
-			volume.diskId = diskId // Set the disk ID
-			location.SetVolume(vid, volume)
-			glog.V(0).Infof("add volume %d on disk ID %d", vid, diskId)
-			s.NewVolumesChan <- &master_pb.VolumeShortInformationMessage{
-				Id:               uint32(vid),
-				Collection:       collection,
-				ReplicaPlacement: uint32(replicaPlacement.Byte()),
-				Version:          uint32(volume.Version()),
-				Ttl:              ttl.ToUint32(),
-				DiskType:         string(diskType),
-				DiskId:           diskId,
-			}
-			return nil
-		} else {
-			if IsDiskError(err) {
-				location.ReportDiskError(err)
-			}
-			return err
+	var location *DiskLocation
+	var diskId uint32
+	minVolCount := -1
+	for i, loc := range locations {
+		if loc.DiskType != diskType || !s.hasFreeDiskLocation(loc) {
+			continue
+		}
+		volCount := loc.LocalVolumesLen()
+		if location == nil || volCount < minVolCount {
+			location = loc
+			diskId = uint32(i)
+			minVolCount = volCount
 		}
 	}
-	return fmt.Errorf("No more free space left")
+	return location, diskId
 }
 
 // hasFreeDiskLocation checks if a disk location has free space

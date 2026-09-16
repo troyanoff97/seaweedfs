@@ -128,6 +128,16 @@ func TestVolumeLoadBalancing(t *testing.T) {
 		expectedLocations []int // which location index should get each volume
 	}{
 		{
+			name: "fills empty disks before stacking on occupied",
+			locations: []locationSetup{
+				{localVolumes: 3, remoteVolumes: 0},
+				{localVolumes: 0, remoteVolumes: 0},
+				{localVolumes: 0, remoteVolumes: 0},
+			},
+			// Must use empty dirs first; never stack on loc0 while empties remain.
+			expectedLocations: []int{1, 2},
+		},
+		{
 			name: "even distribution across empty locations",
 			locations: []locationSetup{
 				{localVolumes: 0, remoteVolumes: 0},
