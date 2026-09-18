@@ -31,6 +31,46 @@ const (
 	HEARTBEAT_CHAN_SIZE          = 1024
 )
 
+// VolumeDiskPlacement chooses which local -dir receives a newly created volume.
+type VolumeDiskPlacement int
+
+const (
+	// VolumeDiskPlacementLeastLoad fills empty dirs first, then the dir with the
+	// fewest local volumes. Can place several new writables on one "behind" disk.
+	VolumeDiskPlacementLeastLoad VolumeDiskPlacement = iota
+	// VolumeDiskPlacementRoundRobin cycles across free healthy dirs so new
+	// volumes spread evenly regardless of existing volume counts.
+	VolumeDiskPlacementRoundRobin
+)
+
+func ParseVolumeDiskPlacement(s string) (VolumeDiskPlacement, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "", "leastload", "least_load", "least-load":
+		return VolumeDiskPlacementLeastLoad, nil
+	case "roundrobin", "round_robin", "round-robin", "rr":
+		return VolumeDiskPlacementRoundRobin, nil
+	default:
+		return VolumeDiskPlacementLeastLoad, fmt.Errorf("unknown volume disk placement %q (want leastLoad or roundRobin)", s)
+	}
+}
+
+func (p VolumeDiskPlacement) String() string {
+	switch p {
+	case VolumeDiskPlacementRoundRobin:
+		return "roundRobin"
+	default:
+		return "leastLoad"
+	}
+}
+
+func (s *Store) SetVolumeDiskPlacement(p VolumeDiskPlacement) {
+	s.volumeDiskPlacement = p
+}
+
+func (s *Store) VolumeDiskPlacement() VolumeDiskPlacement {
+	return s.volumeDiskPlacement
+}
+
 type ReadOption struct {
 	// request
 	ReadDeleted     bool
@@ -71,8 +111,10 @@ type Store struct {
 	Locations            []*DiskLocation
 	locationsMu          sync.RWMutex
 	volumeCreateMu       sync.Mutex // serializes disk pick + create so concurrent grows do not stack on one dir
-	dataCenter           string     // optional information, overwriting master setting if exists
-	rack                 string     // optional information, overwriting master setting if exists
+	volumeDiskPlacement  VolumeDiskPlacement
+	rrCursor             atomic.Uint64
+	dataCenter           string // optional information, overwriting master setting if exists
+	rack                 string // optional information, overwriting master setting if exists
 	connected            bool
 	NeedleMapKind        NeedleMapKind
 	State                *State
@@ -352,10 +394,17 @@ func (s *Store) addVolume(vid needle.VolumeId, collection string, needleMapKind 
 	}
 }
 
-// pickDiskLocationForNewVolume prefers dirs with zero local volumes so a grow
-// batch fills empty disks before stacking a second volume on any disk. When no
-// empty free dir remains, falls back to least LocalVolumesLen (load balance).
+// pickDiskLocationForNewVolume selects a free healthy dir for a new volume.
+// leastLoad: empty dirs first, then fewest LocalVolumesLen.
+// roundRobin: cycle across free dirs so grows do not pile onto one behind disk.
 func (s *Store) pickDiskLocationForNewVolume(diskType DiskType) (*DiskLocation, uint32) {
+	if s.volumeDiskPlacement == VolumeDiskPlacementRoundRobin {
+		return s.pickDiskLocationRoundRobin(diskType)
+	}
+	return s.pickDiskLocationLeastLoad(diskType)
+}
+
+func (s *Store) pickDiskLocationLeastLoad(diskType DiskType) (*DiskLocation, uint32) {
 	locations := s.LocationsSnapshot()
 
 	for i, loc := range locations {
@@ -382,6 +431,22 @@ func (s *Store) pickDiskLocationForNewVolume(diskType DiskType) (*DiskLocation, 
 		}
 	}
 	return location, diskId
+}
+
+func (s *Store) pickDiskLocationRoundRobin(diskType DiskType) (*DiskLocation, uint32) {
+	locations := s.LocationsSnapshot()
+	var candidates []int
+	for i, loc := range locations {
+		if loc.DiskType == diskType && s.hasFreeDiskLocation(loc) {
+			candidates = append(candidates, i)
+		}
+	}
+	if len(candidates) == 0 {
+		return nil, 0
+	}
+	idx := int(s.rrCursor.Add(1)-1) % len(candidates)
+	i := candidates[idx]
+	return locations[i], uint32(i)
 }
 
 // hasFreeDiskLocation checks if a disk location has free space

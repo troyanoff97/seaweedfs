@@ -4,6 +4,10 @@
 #    /etc/seaweedfs/volume.toml
 # this file is read by volume servers
 
+[volume]
+# how to pick -dir for new volumes: leastLoad (default) or roundRobin
+# diskPlacement = "roundRobin"
+
 [volume.disk.io]
 # Disk IO probing is disabled by default. When enabled, a volume server can
 # stop advertising a disk after sustained IO errors or latency degradation.

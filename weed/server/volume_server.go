@@ -138,6 +138,16 @@ func NewVolumeServer(adminMux, publicMux *http.ServeMux, ip string,
 
 	vs.store = storage.NewStore(vs.grpcDialOption, ip, port, grpcPort, publicUrl, id, folders, maxCounts, minFreeSpaces, idxFolder, vs.needleMapKind, diskTypes, diskTags, ldbTimeout, diskProbeConfig)
 	vs.store.SetDiskConfigPath(diskConfigPath)
+	placementName := util.GetViper().GetString("volume.diskPlacement")
+	if placementName == "" {
+		placementName = "leastLoad"
+	}
+	if placement, err := storage.ParseVolumeDiskPlacement(placementName); err != nil {
+		glog.Fatalf("volume.diskPlacement: %v", err)
+	} else {
+		vs.store.SetVolumeDiskPlacement(placement)
+		glog.V(0).Infof("volume disk placement algorithm: %s", placement)
+	}
 	vs.guard = security.NewGuard(whiteList, signingKey, expiresAfterSec, readSigningKey, readExpiresAfterSec)
 
 	handleStaticResources(adminMux)

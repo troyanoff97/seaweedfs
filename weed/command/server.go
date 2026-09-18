@@ -156,6 +156,7 @@ func init() {
 	serverOptions.v.hasSlowRead = cmdServer.Flag.Bool("volume.hasSlowRead", true, "<experimental> if true, this prevents slow reads from blocking other requests, but large file read P99 latency will increase.")
 	serverOptions.v.readBufferSizeMB = cmdServer.Flag.Int("volume.readBufferSizeMB", 4, "<experimental> larger values can optimize query performance but will increase some memory usage,Use with hasSlowRead normally")
 	serverOptions.v.allowUntrustedRemoteEndpoints = cmdServer.Flag.Bool("volume.allowUntrustedRemoteEndpoints", false, "if true, FetchAndWriteNeedle accepts arbitrary remote S3 endpoints including loopback / link-local hosts. Default rejects internal / metadata endpoints.")
+	serverOptions.v.diskPlacement = cmdServer.Flag.String("volume.diskPlacement", "leastLoad", "how to pick -dir for new volumes: leastLoad or roundRobin")
 	serverOptions.v.setDiskIOProbeDefaults()
 
 	s3Options.port = cmdServer.Flag.Int("s3.port", 8333, "s3 server http listen port")

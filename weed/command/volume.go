@@ -77,6 +77,7 @@ type VolumeServerOptions struct {
 	allowUntrustedRemoteEndpoints *bool
 	debug                         *bool
 	debugPort                     *int
+	diskPlacement                 *string
 	diskIOProbe                   *bool
 	diskIOTimeout                 *time.Duration
 	diskIOInterval                *time.Duration
@@ -230,6 +231,7 @@ func init() {
 	v.allowUntrustedRemoteEndpoints = cmdVolume.Flag.Bool("volume.allowUntrustedRemoteEndpoints", false, "if true, FetchAndWriteNeedle accepts arbitrary remote S3 endpoints including loopback / link-local hosts. Default rejects internal / metadata endpoints.")
 	v.debug = cmdVolume.Flag.Bool("debug", false, "serves runtime profiling data via pprof on the port specified by -debug.port")
 	v.debugPort = cmdVolume.Flag.Int("debug.port", 6060, "http port for debugging")
+	v.diskPlacement = cmdVolume.Flag.String("diskPlacement", "leastLoad", "how to pick -dir for new volumes: leastLoad (empty then fewest) or roundRobin (cycle free dirs)")
 	v.setDiskIOProbeDefaults()
 }
 
@@ -291,6 +293,15 @@ func runVolume(cmd *Command, args []string) bool {
 
 func (v VolumeServerOptions) startVolumeServer(volumeFolders, maxVolumeCounts, volumeWhiteListOption string, minFreeSpaces []util.MinFreeSpace) {
 	v.setDiskIOProbeDefaults()
+
+	placementName := "leastLoad"
+	if v.diskPlacement != nil && *v.diskPlacement != "" {
+		placementName = *v.diskPlacement
+	}
+	if _, err := storage.ParseVolumeDiskPlacement(placementName); err != nil {
+		glog.Fatalf("%v", err)
+	}
+	util.GetViper().Set("volume.diskPlacement", placementName)
 
 	// Set multiple folders and each folder's max volume count limit
 	v.folders = strings.Split(volumeFolders, ",")
